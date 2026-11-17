@@ -1,0 +1,58 @@
+{
+  "name": "autocommit",
+  "displayName": "AutoCommit",
+  "description": "根据 Git 暂存变更和项目规范生成提交说明。",
+  "version": "0.1.0",
+  "publisher": "jasonjia",
+  "author": "Jason Jia",
+  "repository": { "type": "git", "url": "https://github.com/Haiezan/AutoCommit.git" },
+  "license": "UNLICENSED",
+  "engines": { "vscode": "^1.96.0" },
+  "main": "./extension.js",
+  "activationEvents": [
+    "onCommand:autocommit.generate",
+    "onCommand:autocommit.testConnection",
+    "onCommand:autocommit.setApiKey"
+  ],
+  "contributes": {
+    "commands": [
+      { "command": "autocommit.generate", "title": "AutoCommit: 生成提交说明" },
+      { "command": "autocommit.testConnection", "title": "AutoCommit: 测试模型连接" },
+      { "command": "autocommit.setApiKey", "title": "AutoCommit: 设置当前仓库 API Key" }
+    ],
+    "menus": {
+      "scm/title": [
+        { "command": "autocommit.generate", "group": "navigation" }
+      ]
+    },
+    "configuration": {
+      "title": "AutoCommit",
+      "properties": {
+        "autocommit.baseUrl": {
+          "type": "string", "default": "http://localhost:11434/v1/",
+          "description": "未设置项目 .auto/model.json 时使用的 OpenAI 兼容服务地址。"
+        },
+        "autocommit.model": {
+          "type": "string", "default": "",
+          "description": "未设置项目 .auto/model.json 时使用的模型名称。"
+        },
+        "autocommit.allowHttp": {
+          "type": "boolean", "default": false,
+          "description": "明确允许向 HTTP 模型服务发送暂存变更。"
+        },
+        "autocommit.maxInputCharacters": {
+          "type": "integer", "default": 48000, "minimum": 1,
+          "description": "发送给模型的提示内容字符上限，超过时拒绝发送。"
+        }
+      }
+    }
+  },
+  "capabilities": {
+    "untrustedWorkspaces": {
+      "supported": false,
+      "description": "需要读取 Git 暂存内容并访问所配置的模型服务。"
+    }
+  },
+  "scripts": { "test": "node --test tests/*.test.js", "package": "vsce package --no-dependencies" },
+  "devDependencies": { "@vscode/vsce": "^3.6.0" }
+}

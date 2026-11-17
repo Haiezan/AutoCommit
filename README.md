@@ -2,7 +2,7 @@
 
 开发者：Jason Jia
 
-Visual Studio AI 提交助手的 Git 首版原型。分别提供 Visual Studio 2019（16.x，x86）与 Visual Studio 2022 17.14（x64）安装包，共享功能代码。
+AI 提交助手原型。Visual Studio 2019（16.x，x86）与 Visual Studio 2022 17.14（x64）使用共享 C# 代码；VS Code 桌面版使用独立扩展，并共用项目中的 `.auto` 模型配置与提交规范。
 
 当前仓库可下载的安装包：
 
@@ -10,8 +10,9 @@ Visual Studio AI 提交助手的 Git 首版原型。分别提供 Visual Studio 2
 | --- | --- | --- |
 | VS 2019 | [0.6.1](releases/0.6.1/AutoCommit-VS2019-0.6.1.vsix) | Git；TFVC 代码已加入，但未与真实 TFS 服务联调 |
 | VS 2022 17.14 | [0.5.0](releases/0.5.0/AutoCommit-VS2022-0.5.0.vsix) | Git；仓库暂无 0.6.1 的 VS 2022 发布包 |
+| VS Code 桌面版 | [0.1.0](releases/vscode-0.1.0/AutoCommit-VSCode-0.1.0.vsix) | Git 暂存变更生成说明，写入原生提交框；尚未完成 VS Code GUI 实机验收 |
 
-两个版本均未完成 VS 实机验收，安装包未签名。VS 2022 源码清单的版本为 0.6.1，不能据此认为仓库已提供对应安装包。
+Visual Studio 两个版本均未完成 VS 实机验收，安装包未签名。VS 2022 源码清单的版本为 0.6.1，不能据此认为仓库已提供对应安装包。VS Code 的使用方式见 [扩展说明](src/AutoCommit.Vscode/README.md)；其 VSIX 与 Visual Studio 的 VSIX 不通用。
 
 ## 0.6.1 Release：剪贴板重试
 
@@ -97,6 +98,17 @@ Release 构建命令：`dotnet build AutoCommit.sln -c Release -t:Rebuild`。
 插件不会自动暂存或推送；仅在用户明确确认后提交。提交执行期间禁用取消，避免中断 Git 写入后无法判断结果；Git hooks 或签名工具可能需要在外部完成交互。请避免提交期间在其他窗口并发修改暂存区；提交前检查不是跨进程事务锁，hooks 也可修改内容。点击生成才会发送预览中的代码与规范；请确认服务地址适合接收该仓库代码。当前版本没有自动敏感信息检测。
 
 ## 构建及测试
+
+VS Code 扩展在 `src/AutoCommit.Vscode` 独立构建：
+
+```powershell
+cd src/AutoCommit.Vscode
+npm ci
+npm test
+npm run package
+```
+
+生成的 VS Code 专用 VSIX 可通过“扩展：从 VSIX 安装”安装；本地发布包位于 `releases/vscode-0.1.0`。该版本使用 VS Code 原生提交框，不执行自动提交或推送。
 
 ```powershell
 dotnet build AutoCommit.sln

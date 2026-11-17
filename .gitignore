@@ -4,3 +4,5 @@ obj/
 *.user
 *.suo
 TestResults/
+src/AutoCommit.Vscode/node_modules/
+src/AutoCommit.Vscode/*.vsix
