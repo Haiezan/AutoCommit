@@ -1,5 +1,7 @@
 # AutoCommit
 
+开发者：Jason Jia
+
 Visual Studio AI 提交助手的 Git 首版原型。分别提供 Visual Studio 2019（16.x，x86）与 Visual Studio 2022 17.14（x64）安装包，共享功能代码。
 
 当前仓库可下载的安装包：

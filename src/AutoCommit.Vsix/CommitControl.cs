@@ -81,6 +81,7 @@ internal sealed class CommitControl : UserControl
         var panel = new StackPanel();
         shell.Children.Add(new ScrollViewer { Content = panel, VerticalScrollBarVisibility = ScrollBarVisibility.Auto });
         panel.Children.Add(new TextBlock { Text = "AutoCommit", FontSize = 22, FontWeight = FontWeights.SemiBold });
+        panel.Children.Add(new TextBlock { Text = "开发者：Jason Jia", Margin = new Thickness(0, 2, 0, 0) });
         panel.Children.Add(new TextBlock { Text = "读取变更 · 生成说明 · 审核后提交", Margin = new Thickness(0, 4, 0, 12) });
 
         var settingsPanel = new StackPanel { Margin = new Thickness(8) };
