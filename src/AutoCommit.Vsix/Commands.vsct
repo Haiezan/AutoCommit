@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="utf-8"?>
+<CommandTable xmlns="http://schemas.microsoft.com/VisualStudio/2005-10-18/CommandTable">
+  <Extern href="stdidcmd.h" /><Extern href="vsshlids.h" />
+  <Commands package="guidPackage">
+    <Groups><Group guid="guidCommands" id="Group" priority="0x0600"><Parent guid="guidSHLMainMenu" id="IDM_VS_MENU_TOOLS" /></Group></Groups>
+    <Buttons><Button guid="guidCommands" id="Open" priority="0x0100" type="Button"><Parent guid="guidCommands" id="Group" /><Strings><ButtonText>AutoCommit 提交助手</ButtonText></Strings></Button></Buttons>
+  </Commands>
+  <Symbols>
+    <GuidSymbol name="guidPackage" value="{2472be40-75aa-4ed7-bc15-4dde87907610}" />
+    <GuidSymbol name="guidCommands" value="{4dde208c-4bc5-43e6-b520-7953cd73788a}"><IDSymbol name="Group" value="0x1020" /><IDSymbol name="Open" value="0x0100" /></GuidSymbol>
+  </Symbols>
+</CommandTable>

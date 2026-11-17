@@ -1,0 +1,1 @@
+ad828ceccbf4838e5da0fe1d7eb114151008bf8e3b9a55e098e37a9e74683570  AutoCommit-VS2019-0.6.1.vsix
