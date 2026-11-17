@@ -10,6 +10,7 @@ namespace AutoCommit.Vsix;
 internal static class SettingsStore
 {
     private static readonly string Folder = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "AutoCommit");
+    public static bool HasGlobalSettings => File.Exists(Path.Combine(Folder, "settings.json"));
     public static ModelSettings Load() => File.Exists(Path.Combine(Folder, "settings.json"))
         ? JsonConvert.DeserializeObject<ModelSettings>(File.ReadAllText(Path.Combine(Folder, "settings.json"))) ?? new ModelSettings() : new ModelSettings();
     public static string LoadKey() => File.Exists(Path.Combine(Folder, "key.dat"))

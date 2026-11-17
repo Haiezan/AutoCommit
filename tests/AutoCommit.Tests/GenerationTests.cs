@@ -85,6 +85,8 @@ public class GenerationTests
             await File.WriteAllTextAsync(file, "unstaged_marker\n");
             var snapshot = await new GitChangeProvider().ReadAsync(root, default);
             Assert.Contains("staged_marker", snapshot.Diff); Assert.DoesNotContain("unstaged_marker", snapshot.Diff);
+            Assert.Single(snapshot.Files);
+            Assert.Equal("中文 文件.txt", snapshot.Files[0].Path);
             Git(root, "add .");
             var changed = await new GitChangeProvider().ReadAsync(root, default);
             Assert.NotEqual(snapshot.Fingerprint, changed.Fingerprint);

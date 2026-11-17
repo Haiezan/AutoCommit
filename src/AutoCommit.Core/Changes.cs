@@ -1,11 +1,20 @@
 using System;
 using System.Diagnostics;
+using System.Collections.Generic;
+using System.Linq;
 using System.Security.Cryptography;
 using System.Text;
 using System.Threading;
 using System.Threading.Tasks;
 
 namespace AutoCommit.Core;
+
+public sealed class ChangeFile
+{
+    public string Path { get; }
+    public string Operation { get; }
+    public ChangeFile(string path, string operation = "") { Path = path; Operation = operation; }
+}
 
 public sealed class ChangeSnapshot
 {
@@ -15,9 +24,12 @@ public sealed class ChangeSnapshot
     public string Context { get; }
     public string Branch { get; }
     public string Statistics { get; }
-    public ChangeSnapshot(string root, string diff, string context = "", string branch = "", string statistics = "")
+    public IReadOnlyList<ChangeFile> Files { get; }
+    public ChangeSnapshot(string root, string diff, string context = "", string branch = "", string statistics = "",
+        IReadOnlyList<ChangeFile>? files = null)
     {
         Root = root; Diff = diff; Context = context; Branch = branch; Statistics = statistics;
+        Files = files ?? Array.Empty<ChangeFile>();
         using (var hash = SHA256.Create())
             Fingerprint = Convert.ToBase64String(hash.ComputeHash(Encoding.UTF8.GetBytes(context + "\n" + diff)));
     }
@@ -43,7 +55,10 @@ public sealed class GitChangeProvider : IChangeProvider
             if (line.StartsWith("# branch.head ", StringComparison.Ordinal)) branch = line.Substring(14).Trim();
         var statistics = await RunAsync(root, "diff --cached --stat --no-ext-diff --no-textconv", token);
         var diff = await RunAsync(root, "diff --cached --no-ext-diff --no-textconv --no-color --src-prefix=a/ --dst-prefix=b/", token);
-        return new ChangeSnapshot(root, diff, context + index, branch, statistics);
+        var names = await RunAsync(root, "diff --cached --name-only -z --no-ext-diff --no-textconv", token);
+        var files = names.Split(new[] { '\0' }, StringSplitOptions.RemoveEmptyEntries)
+            .Select(path => new ChangeFile(path)).ToArray();
+        return new ChangeSnapshot(root, diff, context + index, branch, statistics, files);
     }
 
     public async Task<string> CommitAsync(ChangeSnapshot expected, string message, CancellationToken token)

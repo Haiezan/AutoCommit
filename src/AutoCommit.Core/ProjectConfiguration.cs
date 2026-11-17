@@ -38,6 +38,9 @@ public static class ProjectConfiguration
             ?? throw new InvalidOperationException(".auto/model.json 不是有效的模型配置。");
     }
 
+    public static ModelSettings LoadOrDefault(string root, ModelSettings defaults) =>
+        File.Exists(ModelPath(root)) ? Load(root) : defaults;
+
     public static void Save(string root, ModelSettings settings)
     {
         Directory.CreateDirectory(Folder(root));

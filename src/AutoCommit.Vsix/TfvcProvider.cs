@@ -29,6 +29,7 @@ internal sealed class TfvcProvider
         var root = Path.GetFullPath(directory);
         var workspace = Open(root);
         var changes = workspace.GetPendingChanges(root, RecursionType.Full).OrderBy(x => x.ServerItem, StringComparer.Ordinal).ToArray();
+        var files = changes.Select(change => new ChangeFile(change.ServerItem, change.ChangeType.ToString())).ToArray();
         var body = new StringBuilder(); var identity = new StringBuilder();
         identity.Append(workspace.VersionControlServer.TeamProjectCollection.Uri).Append('|').Append(workspace.Name).Append('|').Append(workspace.OwnerName);
         foreach (var change in changes) {
@@ -48,7 +49,7 @@ internal sealed class TfvcProvider
             if (body.Length > 200000) throw new InvalidOperationException("TFVC 变更过大，请手工指定更小的项目目录后重试。");
         }
         return new ChangeSnapshot(root, body.ToString(), identity.ToString(), "TFVC / " + workspace.Name,
-            changes.Length + " 项挂起更改；范围：" + root + "（递归，不使用 Team Explorer 的勾选状态）");
+            changes.Length + " 项挂起更改；范围：" + root + "（递归，不使用 Team Explorer 的勾选状态）", files);
     }
 
     public Task<string> CommitAsync(ChangeSnapshot expected, string message, CancellationToken token) => Task.Run(() => {

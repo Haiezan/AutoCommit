@@ -6,6 +6,18 @@ using Xunit;
 public class ProjectConfigurationTests
 {
     [Fact]
+    public void ReadingMissingProjectConfigurationKeepsDirectoryUnchanged()
+    {
+        var root = Path.Combine(Path.GetTempPath(), "AutoCommit-config-" + Guid.NewGuid());
+        Directory.CreateDirectory(root);
+        try {
+            var defaults = new ModelSettings { Model = "local-default" };
+            Assert.Same(defaults, ProjectConfiguration.LoadOrDefault(root, defaults));
+            Assert.False(Directory.Exists(ProjectConfiguration.Folder(root)));
+        } finally { Directory.Delete(root); }
+    }
+
+    [Fact]
     public void InitializationMigratesRulesAndPreservesExistingProjectEdits()
     {
         var root = Path.Combine(Path.GetTempPath(), "AutoCommit-config-" + Guid.NewGuid());
