@@ -1,6 +1,6 @@
 {
-  "BaseUrl": "http://localhost:11434/v1/",
-  "Model": "",
+  "BaseUrl": "https://dashscope.aliyuncs.com/compatible-mode/v1",
+  "Model": "qwen4-max",
   "AllowHttp": false,
   "MaxInputCharacters": 48000
 }

@@ -1,5 +1,7 @@
 # AutoCommit 项目配置
 
-model.json 保存模型地址和名称；commit-rules.md 保存提交规范。API Key 在插件设置中填写并在本机加密保存，不写入项目文件。更换服务地址后需重新填写 Key。
+`.auto/model.json` 保存模型地址、模型名称、HTTP 开关和单次输入字符预算。`MaxInputCharacters` 默认为 48,000，超出时会分批汇总。`.auto/commit-rules.md` 保存项目的提交规范，优先于扩展内置规范。
 
-当前源码支持 Git（包含 TFS/Azure DevOps 托管的 Git）和 TFVC。TFVC 需要 VS2019 Team Explorer 客户端及已映射的工作区；签入会直接写入服务器，真实服务联调尚未完成。仓库中 VS2022 的现有发布包为 0.5.0，仅支持 Git。
+API Key 在扩展中设置并保存在本机。Visual Studio 使用 Windows DPAPI，VS Code 使用 SecretStorage。切换项目或模型服务地址时，插件会按新的项目和地址查找凭据。
+
+Git 从仓库根目录读取 `.auto`，TFVC 从所选范围目录读取 `.auto`。Visual Studio 的 TFVC 路径要求 Team Explorer 打开「挂起的更改」，并读取所选映射目录内的「包含的更改」。平台和提交步骤见[运行逻辑与流程图](../docs/runtime.md)。

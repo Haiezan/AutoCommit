@@ -1,0 +1,5 @@
+{
+    "autocommit.baseUrl": "https://dashscope.aliyuncs.com/compatible-mode/v1",
+    "autocommit.model": "qwen4-max",
+    "autocommit.allowHttp": false
+}
