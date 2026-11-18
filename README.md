@@ -4,15 +4,21 @@
 
 AutoCommit 根据所选变更和项目规范生成可审核的提交说明。Visual Studio 2019（16.x，x86）与 Visual Studio 2022 17.14（x64）使用共享 C# 代码，支持 Git 和 TFVC。VS Code 桌面扩展支持 Git，并共用项目中的 `.auto` 模型配置与提交规范。
 
-下载见 [GitHub Release v0.6.3](https://github.com/Haiezan/AutoCommit/releases/tag/v0.6.3) 和[最新本地发布](releases/LATEST.md)。各平台使用各自的 VSIX。阅读[运行逻辑与流程图](docs/runtime.md)，或查看 [VS Code 使用说明](src/AutoCommit.Vscode/README.md)。
+下载见 [GitHub Release v0.6.4](https://github.com/Haiezan/AutoCommit/releases/tag/v0.6.4) 和[最新本地发布](releases/LATEST.md)。各平台使用各自的 VSIX。阅读[运行逻辑与流程图](docs/runtime.md)，或查看 [VS Code 使用说明](src/AutoCommit.Vscode/README.md)。
 
-## 0.6.3 当前发布
+## 0.6.4 当前发布
+
+- VS Code 暂存区为空且有变更时，可以确认暂存全部变更并生成提交说明。已有暂存内容时直接生成，替换已有说明仍会确认。
+- 默认规范要求标题概括整次提交的主要改动，涉及多个独立模块时在正文列出各模块的关键变化。
+- Visual Studio Release 构建通过，26 项 .NET 测试与 11 项 VS Code 测试通过。编辑器 GUI、真实模型和 TFVC 服务器仍待联调。
+
+## 历史版本
+
+### 0.6.3 Git 和 TFVC 分批生成
 
 - TFVC 仅读取所选目录内 Team Explorer 的「包含的更改」，文本按文件生成统一 diff。预览、生成和插件签入都基于该范围。
 - Git 和 TFVC 超出单次模型输入预算时自动分批提取变更事实，再逐层合并成一份说明。模型请求失败时可使用根据文件清单生成的本地摘要。
 - Visual Studio Release 构建通过，26 项 .NET 测试与 7 项 VS Code 测试通过。安装包未签名，编辑器 GUI、真实模型和 TFVC 服务器仍待联调。
-
-## 历史版本
 
 ### 0.6.2 本地批量发布
 
@@ -136,7 +142,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\Publish-Release.ps
 
 ## 验证范围与下一阶段
 
-0.6.3 发布测试覆盖真实 Git 暂存区、中文路径、部分暂存、快照变化、过期提交拒绝、UTF-8 提交、超过 32 MiB 的暂存差异捕获、分批预算和合并、模型失败兜底及取消。网络测试使用模拟响应。
+发布测试覆盖真实 Git 暂存区、中文路径、部分暂存、快照变化、过期提交拒绝、UTF-8 提交、超过 32 MiB 的暂存差异捕获、分批预算和合并、模型失败兜底及取消。0.6.4 增加了 VS Code 交互回归测试，涵盖空暂存区确认、取消、已有暂存项直接生成及确认期间暂存状态变化。网络测试使用模拟响应。
 
 发布包尚未完成 VS 2019 / VS 2022 的 VSIX 实机安装、工具窗口运行及真实模型联调。发布前应分别验证安装、工具菜单打开、Git 预览、模型生成、取消和复制。
 

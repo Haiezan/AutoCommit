@@ -5,7 +5,8 @@ const fs = require('node:fs/promises');
 const os = require('node:os');
 const path = require('node:path');
 const { createHash } = require('node:crypto');
-const { readGitSnapshot, sameSnapshot, readProjectConfiguration, needsBatching, generateMessage, testConnection, serviceUrl } = require('./lib/core');
+const { readGitSnapshot, sameSnapshot, hasChangesToStage, stageAllChanges, readProjectConfiguration,
+  needsBatching, generateMessage, testConnection, serviceUrl } = require('./lib/core');
 
 async function chooseRepository() {
   const extension = vscode.extensions.getExtension('vscode.git');
@@ -89,23 +90,22 @@ async function testModel(context) {
 async function generate(context) {
   const repo = await chooseRepository();
   if (!repo) return;
-  const before = await readGitSnapshot(repo.rootUri.fsPath);
-  if (!before.diff.trim()) throw new Error('暂存区没有变更，请先在 VS Code 中暂存文件。');
-  const { settings, rules, modelSource, rulesSource } = await configurationFor(repo, context);
+  const initial = await readGitSnapshot(repo.rootUri.fsPath);
+  const needsStaging = !initial.diff.trim();
+  if (needsStaging && !(await hasChangesToStage(initial.root))) {
+    vscode.window.showInformationMessage('AutoCommit：当前仓库没有可生成提交说明的变更。');
+    return;
+  }
+  const { settings, rules, modelSource } = await configurationFor(repo, context);
   if (!String(settings.Model || '').trim()) throw new Error(`请在 ${modelSource} 中填写模型名称。`);
-  const url = serviceUrl(settings);
-  const batched = needsBatching(before, rules, settings);
+  serviceUrl(settings);
   const previous = repo.inputBox.value;
-  const visibleFiles = before.files.slice(0, 30).join('\n');
-  const remaining = before.files.length > 30 ? `\n另有 ${before.files.length - 30} 个文件，请在源代码管理视图中核对。` : '';
-  const answer = await vscode.window.showWarningMessage(
-    '向模型服务发送 Git 暂存变更？',
-    { modal: true, detail: `仓库：${before.root}\n分支：${before.branch}\n文件：${before.files.length} 个\n${visibleFiles}${remaining}\n服务：${url.href}\n模型配置：${modelSource}\n规范：${rulesSource}` +
-      (batched ? '\n\n变更将分批发送再合并，可能产生多次模型调用。' : '') +
-      (previous.trim() ? '\n\n提交框已有内容；生成成功后会再次确认是否替换。' : '') },
-    '发送并生成'
-  );
-  if (answer !== '发送并生成') return;
+  if (needsStaging) {
+    const answer = await vscode.window.showWarningMessage('暂存区为空。是否暂存全部变更并生成提交说明？',
+      { modal: true, detail: `将暂存 ${initial.root} 下的文件修改、删除和未被 Git 忽略的新文件，并向配置的模型服务发送暂存差异。` },
+      '暂存全部并生成');
+    if (answer !== '暂存全部并生成') return;
+  }
   const apiKey = await context.secrets.get(secretKey(repo, settings)) || '';
   const result = await vscode.window.withProgress({
     location: vscode.ProgressLocation.Notification,
@@ -119,6 +119,10 @@ async function generate(context) {
     let capturePath;
     try {
       signal.throwIfAborted();
+      if (needsStaging) progress.report({ message: '正在暂存全部变更…' });
+      const before = needsStaging ? await stageAllChanges(initial, signal) : initial;
+      if (!before.diff.trim()) throw new Error('暂存区没有可生成提交说明的变更。');
+      const batched = needsBatching(before, rules, settings);
       if (batched) {
         temporaryDirectory = await fs.mkdtemp(path.join(os.tmpdir(), 'autocommit-'));
         capturePath = path.join(temporaryDirectory, 'changes.diff');

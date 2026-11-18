@@ -1,6 +1,6 @@
 # AutoCommit 运行逻辑
 
-本文以 0.6.3 的生成和签入流程为基准。默认规范一节同时说明当前源码中新增的多模块写作要求。安装入口、构建和发布命令见[项目 README](../README.md)。
+本文以 0.6.4 的生成和签入流程为基准。安装入口、构建和发布命令见[项目 README](../README.md)。
 
 ## 总体流程
 
@@ -36,7 +36,9 @@ Visual Studio 从当前项目、解决方案或活动文件查找 Git 根目录�
 
 两端都用 `git diff --cached` 取暂存差异。部分暂存时，只分析暂存的代码。快照指纹包含仓库状态、暂存索引和完整差异的摘要。读取前后会核对状态和索引，遇到未解决的合并冲突会提示先处理冲突。
 
-生成前后的快照必须一致。Visual Studio 通过插件提交时会再检查一次，确认后执行本地 `git commit`，保留 Git hooks 和签名设置。暂存和推送由用户另行操作。
+在 VS Code 中，已有暂存内容时，触发生成即发送该范围的差异。暂存区为空且有变更时，会询问是否暂存全部变更并生成。确认后先检查暂存状态，再暂存修改、删除和未被 Git 忽略的新增文件，然后读取新的暂存快照。
+
+生成前后的快照必须一致。Visual Studio 通过插件提交时会再检查一次，确认后执行本地 `git commit`，保留 Git hooks 和签名设置。推送由用户另行操作。
 
 ### TFVC
 
@@ -54,7 +56,7 @@ Visual Studio 在找不到 Git 根目录时尝试 TFVC。先在 Team Explorer �
 | --- | --- |
 | 模型设置 | Git 使用仓库根目录，TFVC 使用所选范围目录。`.auto/model.json` 可保存 `BaseUrl`、`Model`、`AllowHttp` 和 `MaxInputCharacters`。Visual Studio 找不到项目配置时使用本机默认设置，VS Code 用项目文件中的字段覆盖编辑器设置。 |
 | 提交规范 | 优先读取 `.auto/commit-rules.md`，找不到时使用扩展内置规范。Visual Studio 允许临时编辑本次生成规范。持久修改直接保存到项目文件。 |
-| 默认规范 | 当前源码要求标题概括整次提交的主要改动，涉及多个独立模块时在正文分条列出关键变化。这条规则也已同步到本仓库的 `.auto/commit-rules.md`。已有项目按自己的规则文件生成。 |
+| 默认规范 | 标题概括整次提交的主要改动，涉及多个独立模块时在正文分条列出关键变化。这条规则也已同步到本仓库的 `.auto/commit-rules.md`。已有项目按自己的规则文件生成。 |
 | API Key | Visual Studio 用 Windows DPAPI 按当前用户加密，项目凭据按项目路径和模型地址隔离。VS Code 用 SecretStorage，并区分 Git 仓库和模型地址。 |
 
 Visual Studio 读取变更时不创建 `.auto`。首次保存项目配置时按需初始化文件。如果已有旧版 `.commit-rules.md`，则优先将它用作新项目规则的初始内容。Visual Studio 和 VS Code 的本地凭据分别设置。
@@ -106,4 +108,4 @@ flowchart TD
 | Visual Studio 配置和生成 | [ProjectConfiguration.cs](../src/AutoCommit.Core/ProjectConfiguration.cs)、[Generation.cs](../src/AutoCommit.Core/Generation.cs)、[BatchSummarizer.cs](../src/AutoCommit.Core/BatchSummarizer.cs) |
 | VS Code 命令、Git 快照、模型和分批 | [extension.js](../src/AutoCommit.Vscode/extension.js)、[core.js](../src/AutoCommit.Vscode/lib/core.js)、[batch.js](../src/AutoCommit.Vscode/lib/batch.js) |
 
-0.6.3 发布时，26 项 .NET 测试和 7 项 Node 测试通过。测试覆盖真实 Git 暂存差异、超过 32 MiB 的暂存差异捕获、分批预算和合并、模型失败兜底及取消。模型调用使用模拟响应，真实模型、编辑器 GUI 和 TFVC 服务器签入仍待联调。详见 [0.6.3 发布说明](https://github.com/Haiezan/AutoCommit/releases/tag/v0.6.3)。
+0.6.4 发布时，26 项 .NET 测试和 11 项 Node 测试通过。测试覆盖真实 Git 暂存差异、超过 32 MiB 的暂存差异捕获、分批预算和合并、模型失败兜底，以及 VS Code 确认和执行暂存的流程。模型调用使用模拟响应，真实模型、编辑器 GUI 和 TFVC 服务器签入仍待联调。详见 [0.6.4 发布说明](https://github.com/Haiezan/AutoCommit/releases/tag/v0.6.4)。

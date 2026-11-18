@@ -107,6 +107,20 @@ function sameSnapshot(a, b) {
   return left === right && a.fingerprint === b.fingerprint;
 }
 
+async function hasChangesToStage(root) {
+  const { preview } = await readGitStream(root, ['status', '--porcelain', '-z', '--untracked-files=normal', '--ignore-submodules=dirty'], 1);
+  return preview.length > 0;
+}
+
+async function stageAllChanges(expected, signal) {
+  const current = await readGitSnapshot(expected.root, { signal });
+  if (current.diff.trim() || !sameSnapshot(expected, current))
+    throw new Error('确认期间 Git 状态发生变化，请重新运行生成命令。');
+  signal?.throwIfAborted();
+  await git(current.root, 'add', '--all');
+  return readGitSnapshot(current.root, { signal });
+}
+
 async function readProjectConfiguration(root, defaults, defaultRules) {
   const folder = path.join(root, '.auto');
   let settings = defaults;
@@ -253,4 +267,5 @@ async function testConnection(settings, apiKey, fetcher = fetch, signal) {
   return callModel('This is a connection test. Reply briefly.', 'Reply OK.', settings, apiKey, fetcher, signal);
 }
 
-module.exports = { readGitSnapshot, sameSnapshot, readProjectConfiguration, serviceUrl, needsBatching, generateMessage, testConnection };
+module.exports = { readGitSnapshot, sameSnapshot, hasChangesToStage, stageAllChanges, readProjectConfiguration,
+  serviceUrl, needsBatching, generateMessage, testConnection };
