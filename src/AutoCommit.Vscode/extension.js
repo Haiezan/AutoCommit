@@ -2,9 +2,10 @@
 
 const vscode = require('vscode');
 const fs = require('node:fs/promises');
+const os = require('node:os');
 const path = require('node:path');
 const { createHash } = require('node:crypto');
-const { readGitSnapshot, sameSnapshot, readProjectConfiguration, generateMessage, testConnection, serviceUrl } = require('./lib/core');
+const { readGitSnapshot, sameSnapshot, readProjectConfiguration, needsBatching, generateMessage, testConnection, serviceUrl } = require('./lib/core');
 
 async function chooseRepository() {
   const extension = vscode.extensions.getExtension('vscode.git');
@@ -78,9 +79,9 @@ async function testModel(context) {
   }, async (_progress, token) => {
     const controller = new AbortController();
     const subscription = token.onCancellationRequested(() => controller.abort());
-    const timeout = setTimeout(() => controller.abort(), 120000);
+    if (token.isCancellationRequested) controller.abort();
     try { return await testConnection(settings, apiKey, fetch, controller.signal); }
-    finally { clearTimeout(timeout); subscription.dispose(); }
+    finally { subscription.dispose(); }
   });
   vscode.window.showInformationMessage(`模型连接成功：${result.model}。测试请求可能产生少量费用。`);
 }
@@ -93,12 +94,14 @@ async function generate(context) {
   const { settings, rules, modelSource, rulesSource } = await configurationFor(repo, context);
   if (!String(settings.Model || '').trim()) throw new Error(`请在 ${modelSource} 中填写模型名称。`);
   const url = serviceUrl(settings);
+  const batched = needsBatching(before, rules, settings);
   const previous = repo.inputBox.value;
   const visibleFiles = before.files.slice(0, 30).join('\n');
   const remaining = before.files.length > 30 ? `\n另有 ${before.files.length - 30} 个文件，请在源代码管理视图中核对。` : '';
   const answer = await vscode.window.showWarningMessage(
     '向模型服务发送 Git 暂存变更？',
     { modal: true, detail: `仓库：${before.root}\n分支：${before.branch}\n文件：${before.files.length} 个\n${visibleFiles}${remaining}\n服务：${url.href}\n模型配置：${modelSource}\n规范：${rulesSource}` +
+      (batched ? '\n\n变更将分批发送再合并，可能产生多次模型调用。' : '') +
       (previous.trim() ? '\n\n提交框已有内容；生成成功后会再次确认是否替换。' : '') },
     '发送并生成'
   );
@@ -107,18 +110,39 @@ async function generate(context) {
   const result = await vscode.window.withProgress({
     location: vscode.ProgressLocation.Notification,
     title: 'AutoCommit 正在生成提交说明', cancellable: true
-  }, async (_progress, token) => {
+  }, async (progress, token) => {
     const controller = new AbortController();
     const subscription = token.onCancellationRequested(() => controller.abort());
-    const timeout = setTimeout(() => controller.abort(), 120000);
-    try { return await generateMessage(before, rules, settings, apiKey, fetch, controller.signal); }
-    finally { clearTimeout(timeout); subscription.dispose(); }
+    if (token.isCancellationRequested) controller.abort();
+    const { signal } = controller;
+    let temporaryDirectory;
+    let capturePath;
+    try {
+      signal.throwIfAborted();
+      if (batched) {
+        temporaryDirectory = await fs.mkdtemp(path.join(os.tmpdir(), 'autocommit-'));
+        capturePath = path.join(temporaryDirectory, 'changes.diff');
+      }
+      progress.report({ message: '正在校验暂存变更…' });
+      const current = await readGitSnapshot(repo.rootUri.fsPath, { capturePath, signal });
+      if (!sameSnapshot(before, current)) throw new Error('暂存内容或分支发生变化。原提交说明已保留，请重新生成。');
+      const generated = await generateMessage(before, rules, settings, apiKey, fetch, signal,
+        { capturePath, progress: message => progress.report({ message }) });
+      const after = await readGitSnapshot(repo.rootUri.fsPath, { signal });
+      if (!sameSnapshot(before, after)) throw new Error('生成期间暂存内容或分支发生变化。原提交说明已保留，请重新生成。');
+      signal.throwIfAborted();
+      return generated;
+    } finally {
+      subscription.dispose();
+      if (capturePath) {
+        await fs.rm(capturePath, { force: true });
+        await fs.rmdir(temporaryDirectory);
+      }
+    }
   });
-  const after = await readGitSnapshot(repo.rootUri.fsPath);
-  if (!sameSnapshot(before, after)) throw new Error('生成期间暂存内容或分支发生变化。原提交说明已保留，请重新生成。');
   if (repo.inputBox.value !== previous || previous.trim()) {
     const replace = await vscode.window.showWarningMessage(
-      '提交框已有内容，是否用新生成的说明替换？',
+      result.fallbackReason ? '提交框已有内容，是否使用本地摘要替换？' : '提交框已有内容，是否用新生成的说明替换？',
       { modal: true, detail: '取消会保留当前提交框内容。' }, '替换内容'
     );
     if (replace !== '替换内容') return;
@@ -126,7 +150,8 @@ async function generate(context) {
   repo.inputBox.value = result.text;
   const usage = result.usage;
   const usageText = usage ? ` 输入 ${usage.prompt_tokens ?? '未提供'} / 输出 ${usage.completion_tokens ?? '未提供'} Token。` : ' 服务未返回 Token 用量。';
-  vscode.window.showInformationMessage('已写入 Git 提交框，请审核并使用 VS Code 的提交操作。' + usageText);
+  if (result.fallbackReason) vscode.window.showWarningMessage('已将本地摘要写入 Git 提交框。' + result.fallbackReason);
+  else vscode.window.showInformationMessage(`已写入 Git 提交框，请审核。模型请求 ${result.requests} 次。` + usageText);
 }
 
 function activate(context) {

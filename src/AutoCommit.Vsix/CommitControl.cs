@@ -1,6 +1,7 @@
 using System;
 using System.IO;
 using System.Net.Http;
+using System.Text;
 using System.Threading;
 using Task = System.Threading.Tasks.Task;
 using System.Windows;
@@ -117,7 +118,7 @@ internal sealed class CommitControl : UserControl
         panel.Children.Add(new Expander { Header = "变更内容预览", Content = diff });
         var rulePanel = new StackPanel(); rulePanel.Children.Add(ruleSource); rulePanel.Children.Add(rules);
         panel.Children.Add(new Expander { Header = "提交规范", Content = rulePanel });
-        panel.Children.Add(new TextBlock { Text = "生成时向配置的模型服务发送预览中的变更内容和规范。", TextWrapping = TextWrapping.Wrap, Margin = new Thickness(0, 8, 0, 8) });
+        panel.Children.Add(new TextBlock { Text = "生成时向配置的模型服务发送所选变更和规范。超出单次预算时会分批汇总。", TextWrapping = TextWrapping.Wrap, Margin = new Thickness(0, 8, 0, 8) });
         var output = new StackPanel { Margin = new Thickness(8) };
         var outputHeader = new DockPanel(); outputHeader.Children.Add(draftState);
         undo.HorizontalAlignment = HorizontalAlignment.Right; outputHeader.Children.Add(undo); output.Children.Add(outputHeader);
@@ -140,7 +141,10 @@ internal sealed class CommitControl : UserControl
         }
         result.TextChanged += (s, e) => { if (!updatingResult) draft.Edit(result.Text); UpdateActions(); };
         directory.TextChanged += (s, e) => { snapshot = null; projectRoot = ""; loadedModelJson = ""; key.Clear(); diff.Clear(); files.Clear(); directory.ToolTip = directory.Text; summary.Text = "目录已变更，请重新读取；已有说明已保留。"; InvalidateModelState(); UpdateActions(); };
-        rules.TextChanged += (s, e) => { if (rules.Text != loadedRuleText) status.Text = "规范已修改，仅影响后续生成；当前提交说明未改变。"; };
+        rules.TextChanged += (s, e) => {
+            if (rules.Text != loadedRuleText) status.Text = "规范已修改，仅影响后续生成；当前提交说明未改变。";
+            if (snapshot != null) UpdateDiffPreview();
+        };
         endpoint.TextChanged += (s, e) => { key.Clear(); ValidateSettings(); InvalidateModelState(); };
         model.TextChanged += (s, e) => { ValidateSettings(); InvalidateModelState(); };
         key.PasswordChanged += (s, e) => InvalidateModelState();
@@ -179,31 +183,51 @@ internal sealed class CommitControl : UserControl
         generate.Click += async (s, e) => await RunAsync(async token => {
             var selected = snapshot ?? throw new InvalidOperationException("请先读取变更。");
             var settings = CurrentSettings();
-            var current = await git.ReadAsync(directory.Text, token);
-            EnsureSame(selected, current);
+            var currentRules = rules.Text;
+            var apiKey = key.Password;
             if (!string.IsNullOrWhiteSpace(result.Text) && !Confirm("重新生成提交说明？",
                 (draft.Edited ? "当前说明包含手动修改。" : "当前已有提交说明。") + "新结果生成成功后将替换当前内容；失败或取消会保留原内容。", "重新生成")) {
                 status.Text = "已取消重新生成，原内容已保留。"; return;
             }
+            var needsBatching = CommitGenerator.NeedsBatching(selected, currentRules, settings.MaxInputCharacters);
+            using var capture = needsBatching ? new FileStream(Path.Combine(Path.GetTempPath(), $"AutoCommit-{Guid.NewGuid():N}.diff"),
+                FileMode.CreateNew, FileAccess.ReadWrite, FileShare.None, 8192, FileOptions.DeleteOnClose) : null;
+            status.Text = needsBatching ? "正在校验并读取完整变更以准备分批…" : "正在校验变更…";
+            ChangeSnapshot current;
+            using (var writer = capture == null ? null : new StreamWriter(capture, new UTF8Encoding(false), 8192, leaveOpen: true))
+                current = await git.ReadAsync(directory.Text, token, includeTfvcDiff: false, capture: writer);
+            EnsureSame(selected, current);
+            if (capture != null) capture.Position = 0;
+            using var reader = capture == null ? null : new StreamReader(capture, Encoding.UTF8, false, 8192, leaveOpen: true);
             generationPending = true; attempt.Text = "本次生成：正在请求…";
             draftState.Text = "生成中 · 原内容已保留"; cancel.Content = "取消生成";
             status.Text = "正在生成，原内容已保留…";
             GenerationResult response;
-            try { response = await new CommitGenerator(Client).GenerateAsync(selected, rules.Text, settings, key.Password, token); modelStatus.Text = "模型：调用成功"; }
+            var batchProgress = new Progress<string>(message => { if (generationPending) status.Text = message; });
+            try {
+                response = await Task.Run(() => new CommitGenerator(Client).GenerateAsync(selected, currentRules, settings,
+                    apiKey, token, reader, batchProgress), token);
+                modelStatus.Text = response.FallbackReason == null ? "模型：调用成功" : "模型：" + response.FallbackReason;
+            }
             catch (Exception ex) { modelStatus.Text = "模型调用失败：" + ex.Message; throw; }
 
-            generationPending = false; attempt.Text = "最近请求：输入 " + TokenValue(response.InputTokens) + " / 输出 " + TokenValue(response.OutputTokens) + " Token";
-            current = await git.ReadAsync(directory.Text, token);
+            generationPending = false;
+            attempt.Text = $"本次模型请求 {response.Requests} 次 · 输入 {TokenValue(response.InputTokens)} / 输出 {TokenValue(response.OutputTokens)} Token";
+            current = await git.ReadAsync(directory.Text, token, includeTfvcDiff: false);
             EnsureSame(selected, current);
+            if (response.FallbackReason != null && !string.IsNullOrWhiteSpace(result.Text) &&
+                !Confirm("使用本地摘要？", response.FallbackReason + " 选择使用会替换现有说明。", "使用本地摘要")) {
+                status.Text = "原说明已保留。"; return;
+            }
             draft.Accept(response, selected); ApplyDraft();
-            status.Text = "已生成。当前版本将 Markdown 作为提示词；请人工检查规范及事实准确性。";
-        });
+            status.Text = response.FallbackReason == null ? "已生成，请核对提交规范及事实准确性。" : "已生成本地摘要。" + response.FallbackReason;
+        }, operationTimeout: false);
         copy.Click += async (s, e) => await RunAsync(async token => {
             var text = result.Text;
             var copyReason = draft.Committed ? "此说明已用于提交。" : draft.Snapshot == null ? "此说明没有对应的已读取变更。" : "";
             if (copyReason.Length == 0) {
                 try {
-                    var current = await git.ReadAsync(directory.Text, token);
+                    var current = await git.ReadAsync(directory.Text, token, includeTfvcDiff: false);
                     if (draft.Snapshot!.Root != current.Root || draft.Snapshot.Fingerprint != current.Fingerprint)
                         copyReason = "当前变更已变化，此说明可能过期。";
                 } catch (Exception ex) when (!(ex is OperationCanceledException)) {
@@ -225,7 +249,7 @@ internal sealed class CommitControl : UserControl
         });
         commit.Click += async (s, e) => await RunAsync(async token => {
             var selected = draft.Snapshot ?? throw new InvalidOperationException("请先生成提交说明。");
-            EnsureSame(selected, await git.ReadAsync(directory.Text, token));
+            EnsureSame(selected, await git.ReadAsync(directory.Text, token, includeTfvcDiff: false));
             var message = result.Text;
             if (!ConfirmCommit(selected, message)) { status.Text = "已取消提交。"; return; }
             cancel.IsEnabled = false; draftState.Text = "正在提交…"; status.Text = git.IsTfvc ? "正在签入 TFS 服务器…" : "正在提交到本地 Git，请等待 hooks 和签名完成…";
@@ -274,13 +298,23 @@ internal sealed class CommitControl : UserControl
         } else if (loadedRulePath != path || rules.Text == loadedRuleText) { loadedRuleText = incomingRules; rules.Text = incomingRules; }
         loadedRulePath = path;
         ruleSource.Text = rules.Text != incomingRules ? "规范来源：保留的临时修改（当前仓库规范未覆盖）" : File.Exists(path) ? "规范来源：" + path : "规范来源：内置完整规范（可在此临时编辑）";
-        snapshot = current; diff.Text = current.Diff;
+        snapshot = current;
         files.Text = FormatFiles(current);
         commit.Content = git.IsTfvc ? "签入 TFS 服务器" : "提交到本地 Git";
         repositoryStatus.Text = (git.IsTfvc ? "TFVC：" : "Git：") + "读取成功 · " + current.Root;
         summary.Text = (git.IsTfvc ? "工作区：" + current.Branch.Substring("TFVC / ".Length) : "分支：" + current.Branch) + " · " + current.Files.Count +
-            (git.IsTfvc ? " 项挂起更改" : " 个暂存文件") + "\n" + current.Statistics;
-        status.Text = string.IsNullOrWhiteSpace(current.Diff) ? "未发现变更：Git 请暂存修改；TFVC 请先在 Team Explorer 确认挂起更改。" : !string.IsNullOrWhiteSpace(draft.Text) && !draft.Matches(current) ? "变更已读取，已有说明已保留并标记过期。请重新生成。" : "变更已读取，可以生成提交说明。";
+            (git.IsTfvc ? " 项包含的更改" : " 个暂存文件") + "\n" + current.Statistics;
+        status.Text = !current.HasChanges
+            ? git.IsTfvc ? "当前目录内没有包含项，请在 Team Explorer 的“包含的更改”中确认本次签入的文件。" : "暂存区没有变更，请先暂存修改。"
+            : !string.IsNullOrWhiteSpace(draft.Text) && !draft.Matches(current) ? "变更已读取，已有说明已保留并标记过期。请重新生成。" : "变更已读取，可以生成提交说明。";
+        UpdateDiffPreview();
+    }
+
+    private void UpdateDiffPreview()
+    {
+        if (snapshot == null) { diff.Clear(); return; }
+        try { diff.Text = CommitGenerator.PreviewDiff(snapshot, rules.Text, inputBudget); }
+        catch (InvalidOperationException ex) { diff.Text = status.Text = ex.Message; }
     }
 
     private static string TokenValue(long? value) => value?.ToString("N0") ?? "服务未返回";
@@ -291,10 +325,14 @@ internal sealed class CommitControl : UserControl
         try { result.Text = draft.Text; } finally { updatingResult = false; }
         var response = draft.Response;
         if (response == null) { usage.Text = "Token：无模型响应记录"; usageDetails.Text = ""; }
+        else if (response.FallbackReason != null) {
+            usage.Text = $"本地摘要 · 模型请求 {response.Requests} 次";
+            usageDetails.Text = response.FallbackReason;
+        }
         else {
-            usage.Text = "模型 " + response.Model + " · " + response.Seconds.ToString("F1") + " 秒\n输入 " + TokenValue(response.InputTokens) +
+            usage.Text = "模型 " + response.Model + " · " + response.Seconds.ToString("F1") + " 秒 · " + response.Requests + " 次请求\n输入 " + TokenValue(response.InputTokens) +
                 " · 输出 " + TokenValue(response.OutputTokens) + " · 总计 " + TokenValue(response.TotalTokens) + " Token";
-            usageDetails.Text = "对应原始模型响应，手动编辑不改变用量。\n缓存输入 " + TokenValue(response.CachedTokens) + " / 推理输出 " + TokenValue(response.ReasoningTokens) + "（子项不重复相加）";
+            usageDetails.Text = "本次生成的模型请求合计，手动编辑不改变用量。\n缓存输入 " + TokenValue(response.CachedTokens) + " / 推理输出 " + TokenValue(response.ReasoningTokens) + "（子项不重复相加）";
         }
         UpdateActions();
     }
@@ -343,7 +381,7 @@ internal sealed class CommitControl : UserControl
         var hasText = !string.IsNullOrWhiteSpace(result.Text);
         count.Text = "标题 " + result.Text.Split('\n')[0].TrimEnd('\r').Length + " / 72 字符（默认建议） · 共 " + result.Text.Length + " 字符";
         generate.Content = hasText ? "重新生成" : "生成提交说明";
-        generate.IsEnabled = !busy && !string.IsNullOrWhiteSpace(snapshot?.Diff);
+        generate.IsEnabled = !busy && snapshot?.HasChanges == true;
         copy.IsEnabled = !busy && hasText;
         commit.IsEnabled = !busy && hasText && draft.Matches(snapshot);
         undo.IsEnabled = !busy && draft.CanUndo;
@@ -408,7 +446,7 @@ internal sealed class CommitControl : UserControl
         yes.Click += (s, e) => dialog.DialogResult = true;
         var panel = new StackPanel(); shell.Children.Add(panel);
         panel.Children.Add(new TextBlock { Text = (tfvc ? "工作区：" + selected.Branch.Substring("TFVC / ".Length) : "分支：" + selected.Branch) + "\n范围：" + selected.Root +
-            "\n" + selected.Files.Count + (tfvc ? " 项挂起更改，包含所选目录下的全部递归更改；不采用 Team Explorer 勾选项。" : " 个暂存文件；提交后不会推送。"),
+            "\n" + selected.Files.Count + (tfvc ? " 项 Team Explorer 包含的更改，均位于所选目录范围内。" : " 个暂存文件；提交后不会推送。"),
             TextWrapping = TextWrapping.Wrap, Margin = new Thickness(0, 0, 0, 10) });
         panel.Children.Add(new TextBlock { Text = "变更文件", FontWeight = FontWeights.SemiBold });
         panel.Children.Add(new TextBox { Text = FormatFiles(selected), IsReadOnly = true, Height = 190,
@@ -436,12 +474,12 @@ internal sealed class CommitControl : UserControl
     private void EnsureSame(ChangeSnapshot expected, ChangeSnapshot actual)
     {
         if (!string.Equals(expected.Root, actual.Root, StringComparison.OrdinalIgnoreCase) || expected.Fingerprint != actual.Fingerprint)
-        { snapshot = null; UpdateActions(); throw new InvalidOperationException("仓库、分支或暂存内容已变化。说明已保留，请重新读取并生成。"); }
+        { snapshot = null; UpdateActions(); throw new InvalidOperationException("仓库或选定的变更已变化。说明已保留，请重新读取并生成。"); }
     }
-    private async Task RunAsync(Func<CancellationToken, Task> action, TextBlock? operationStatus = null)
+    private async Task RunAsync(Func<CancellationToken, Task> action, TextBlock? operationStatus = null, bool operationTimeout = true)
     {
         if (cancellation != null) return;
-        cancellation = new CancellationTokenSource(TimeSpan.FromMinutes(3));
+        cancellation = operationTimeout ? new CancellationTokenSource(TimeSpan.FromMinutes(3)) : new CancellationTokenSource();
         refresh.IsEnabled = generate.IsEnabled = copy.IsEnabled = commit.IsEnabled = detect.IsEnabled = manual.IsEnabled = test.IsEnabled = save.IsEnabled = false;
         cancel.IsEnabled = true; progress.Visibility = Visibility.Visible; progress.IsIndeterminate = true;
         directory.IsEnabled = endpoint.IsEnabled = model.IsEnabled = key.IsEnabled = allowHttp.IsEnabled = rules.IsEnabled = false;

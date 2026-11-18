@@ -1,7 +1,7 @@
 using System;
 using System.Diagnostics;
 using System.Collections.Generic;
-using System.Linq;
+using System.IO;
 using System.Security.Cryptography;
 using System.Text;
 using System.Threading;
@@ -25,11 +25,17 @@ public sealed class ChangeSnapshot
     public string Branch { get; }
     public string Statistics { get; }
     public IReadOnlyList<ChangeFile> Files { get; }
+    public IReadOnlyList<TfvcFileChange>? TfvcChanges { get; }
+    public bool DiffIsPartial { get; }
+    public bool HasChanges => TfvcChanges == null ? !string.IsNullOrWhiteSpace(Diff) : TfvcChanges.Count > 0;
+
     public ChangeSnapshot(string root, string diff, string context = "", string branch = "", string statistics = "",
-        IReadOnlyList<ChangeFile>? files = null)
+        IReadOnlyList<ChangeFile>? files = null, IReadOnlyList<TfvcFileChange>? tfvcChanges = null, bool diffIsPartial = false)
     {
         Root = root; Diff = diff; Context = context; Branch = branch; Statistics = statistics;
         Files = files ?? Array.Empty<ChangeFile>();
+        TfvcChanges = tfvcChanges;
+        DiffIsPartial = diffIsPartial;
         using (var hash = SHA256.Create())
             Fingerprint = Convert.ToBase64String(hash.ComputeHash(Encoding.UTF8.GetBytes(context + "\n" + diff)));
     }
@@ -43,7 +49,11 @@ public interface IChangeProvider
 // Only the index is analyzed: unstaged edits must never leak into a staged commit summary.
 public sealed class GitChangeProvider : IChangeProvider
 {
-    public async Task<ChangeSnapshot> ReadAsync(string directory, CancellationToken token)
+    private const int MaxPreviewCharacters = 2_000_000;
+
+    public Task<ChangeSnapshot> ReadAsync(string directory, CancellationToken token) => ReadAsync(directory, token, null);
+
+    public async Task<ChangeSnapshot> ReadAsync(string directory, CancellationToken token, TextWriter? capture)
     {
         var root = (await RunAsync(directory, "rev-parse --show-toplevel", token)).Trim();
         var unresolved = await RunAsync(root, "diff --name-only --diff-filter=U", token);
@@ -53,12 +63,39 @@ public sealed class GitChangeProvider : IChangeProvider
         var branch = "未知";
         foreach (var line in context.Split('\n'))
             if (line.StartsWith("# branch.head ", StringComparison.Ordinal)) branch = line.Substring(14).Trim();
-        var statistics = await RunAsync(root, "diff --cached --stat --no-ext-diff --no-textconv", token);
-        var diff = await RunAsync(root, "diff --cached --no-ext-diff --no-textconv --no-color --src-prefix=a/ --dst-prefix=b/", token);
-        var names = await RunAsync(root, "diff --cached --name-only -z --no-ext-diff --no-textconv", token);
-        var files = names.Split(new[] { '\0' }, StringSplitOptions.RemoveEmptyEntries)
-            .Select(path => new ChangeFile(path)).ToArray();
-        return new ChangeSnapshot(root, diff, context + index, branch, statistics, files);
+        var statistics = await RunAsync(root, "diff --cached --stat=120,80,20 --no-ext-diff --no-textconv", token);
+        var preview = new StringBuilder();
+        var partial = false;
+        var diffHash = await RunAsync(root, "diff --cached --no-ext-diff --no-textconv --no-color --src-prefix=a/ --dst-prefix=b/", token,
+            readOutput: async output => {
+                using var hash = IncrementalHash.CreateHash(HashAlgorithmName.SHA256);
+                var buffer = new char[8192];
+                var bytes = new byte[buffer.Length * sizeof(char)];
+                int count;
+                while ((count = await output.ReadAsync(buffer, 0, buffer.Length).ConfigureAwait(false)) != 0) {
+                    token.ThrowIfCancellationRequested();
+                    Buffer.BlockCopy(buffer, 0, bytes, 0, count * sizeof(char));
+                    hash.AppendData(bytes, 0, count * sizeof(char));
+                    var toKeep = Math.Min(count, MaxPreviewCharacters - preview.Length);
+                    preview.Append(buffer, 0, toKeep);
+                    partial |= toKeep < count;
+                    if (capture != null) await capture.WriteAsync(buffer, 0, count).ConfigureAwait(false);
+                }
+                return Convert.ToBase64String(hash.GetHashAndReset());
+            });
+        var names = await RunAsync(root, "diff --cached --name-status -z --no-ext-diff --no-textconv", token);
+        var endContext = await RunAsync(root, "status --porcelain=v2 --branch --untracked-files=no", token);
+        var endIndex = await RunAsync(root, "ls-files --stage -z", token);
+        if (context != endContext || index != endIndex) throw new InvalidOperationException("读取期间 Git 状态发生变化，请重试。");
+        var entries = names.Split('\0');
+        var files = new List<ChangeFile>();
+        for (var i = 0; i < entries.Length - 1;) {
+            var status = entries[i++][0];
+            if (status == 'R' || status == 'C') i++;
+            var operation = status switch { 'A' => "新增", 'D' => "删除", 'M' => "修改", 'R' => "重命名", 'C' => "复制", 'T' => "类型变更", _ => "变更" };
+            files.Add(new ChangeFile(entries[i++], operation));
+        }
+        return new ChangeSnapshot(root, preview.ToString(), context + index + "\n" + diffHash, branch, statistics, files, diffIsPartial: partial);
     }
 
     public async Task<string> CommitAsync(ChangeSnapshot expected, string message, CancellationToken token)
@@ -71,7 +108,8 @@ public sealed class GitChangeProvider : IChangeProvider
         return await RunAsync(expected.Root, "-c i18n.commitEncoding=utf-8 commit --file=-", token, message).ConfigureAwait(false);
     }
 
-    private static async Task<string> RunAsync(string directory, string arguments, CancellationToken token, string? input = null, bool allowFailure = false)
+    private static async Task<string> RunAsync(string directory, string arguments, CancellationToken token, string? input = null,
+        Func<StreamReader, Task<string>>? readOutput = null)
     {
         token.ThrowIfCancellationRequested();
         using (var process = new Process())
@@ -85,13 +123,15 @@ public sealed class GitChangeProvider : IChangeProvider
             process.Start();
             using (token.Register(() => { try { if (!process.HasExited) process.Kill(); } catch (InvalidOperationException) { } }))
             {
-                var output = process.StandardOutput.ReadToEndAsync();
+                var output = readOutput == null ? process.StandardOutput.ReadToEndAsync() : readOutput(process.StandardOutput);
                 var error = process.StandardError.ReadToEndAsync();
                 if (input != null) { var bytes = new UTF8Encoding(false).GetBytes(input); await process.StandardInput.BaseStream.WriteAsync(bytes, 0, bytes.Length).ConfigureAwait(false); process.StandardInput.Close(); }
-                await Task.WhenAll(output, error).ConfigureAwait(false);
+                try { await output.ConfigureAwait(false); }
+                catch { if (!process.HasExited) process.Kill(); throw; }
+                await error.ConfigureAwait(false);
                 await Task.Run(() => process.WaitForExit()).ConfigureAwait(false);
                 token.ThrowIfCancellationRequested();
-                if (process.ExitCode != 0 && !allowFailure) {
+                if (process.ExitCode != 0) {
                     var detail = await error;
                     var hint = detail.Contains("Author identity unknown") || detail.Contains("unable to auto-detect email") ? "请先配置 Git user.name 和 user.email。" :
                         detail.Contains("gpg failed") || detail.Contains("failed to sign") ? "提交签名失败，请检查 GPG/SSH 签名配置。" :

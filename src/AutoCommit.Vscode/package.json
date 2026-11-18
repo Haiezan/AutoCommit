@@ -2,7 +2,7 @@
   "name": "autocommit",
   "displayName": "AutoCommit",
   "description": "根据 Git 暂存变更和项目规范生成提交说明。",
-  "version": "0.6.2",
+  "version": "0.6.3",
   "publisher": "jasonjia",
   "author": "Jason Jia",
   "repository": {
@@ -64,7 +64,7 @@
           "type": "integer",
           "default": 48000,
           "minimum": 1,
-          "description": "发送给模型的提示内容字符上限，超过时拒绝发送。"
+          "description": "单次模型请求的提示内容字符上限。超出时自动分批汇总并合并。"
         }
       }
     }

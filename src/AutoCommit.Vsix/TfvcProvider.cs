@@ -1,70 +1,152 @@
 using System;
+using System.Collections.Generic;
 using System.IO;
 using System.Linq;
-using System.Security.Cryptography;
+using System.Reflection;
+using System.Runtime.InteropServices;
 using System.Text;
 using System.Threading;
 using System.Threading.Tasks;
 using AutoCommit.Core;
-using Microsoft.TeamFoundation.Client;
+using EnvDTE;
 using Microsoft.TeamFoundation.VersionControl.Client;
+using ServiceProvider = Microsoft.VisualStudio.Shell.ServiceProvider;
+using ThreadHelper = Microsoft.VisualStudio.Shell.ThreadHelper;
 
 namespace AutoCommit.Vsix;
 
 internal sealed class TfvcProvider
 {
-    public Task<ChangeSnapshot> ReadAsync(string directory, CancellationToken token) => Task.Run(() => Read(directory, token), token);
+    private const string SelectionChanged = "Team Explorer 的包含项或挂起更改已变化，请重新读取并生成。";
+    private const int MaxFileDiffCharacters = 100_000;
+    private const int MaxSnapshotDiffCharacters = 2_000_000;
 
-    private static Workspace Open(string path)
-    {
-        var info = Workstation.Current.GetLocalWorkspaceInfo(path);
-        if (info == null) throw new InvalidOperationException("此目录未映射到 TFVC 工作区。请先在 Team Explorer 连接 TFS 并映射工作区。");
-        var collection = TfsTeamProjectCollectionFactory.GetTeamProjectCollection(info.ServerUri);
-        collection.EnsureAuthenticated();
-        return collection.GetService<VersionControlServer>().GetWorkspace(path);
-    }
-
-    private static ChangeSnapshot Read(string directory, CancellationToken token)
+    public async Task<ChangeSnapshot> ReadAsync(string directory, CancellationToken token, bool includeDiff, TextWriter? capture)
     {
         var root = Path.GetFullPath(directory);
-        var workspace = Open(root);
-        var changes = workspace.GetPendingChanges(root, RecursionType.Full).OrderBy(x => x.ServerItem, StringComparer.Ordinal).ToArray();
-        var files = changes.Select(change => new ChangeFile(change.ServerItem, change.ChangeType.ToString())).ToArray();
-        var body = new StringBuilder(); var identity = new StringBuilder();
-        identity.Append(workspace.VersionControlServer.TeamProjectCollection.Uri).Append('|').Append(workspace.Name).Append('|').Append(workspace.OwnerName);
-        foreach (var change in changes) {
-            token.ThrowIfCancellationRequested();
-            identity.Append('\n').Append(change.ServerItem).Append('|').Append(change.SourceServerItem).Append('|').Append(change.Version).Append('|').Append(change.ChangeType);
-            body.AppendLine("文件：" + change.ServerItem + "；操作：" + change.ChangeType + "；原路径：" + change.SourceServerItem);
-            if (change.ItemType == ItemType.Folder) continue;
-            if (!change.IsAdd) {
-                var temp = Path.GetTempFileName();
-                try { change.DownloadBaseFile(temp); TfvcContent.AppendFile(temp, "工作区基线（修改前）", body, identity); }
-                finally { File.Delete(temp); }
-            }
-            if (!change.IsDelete) {
-                if (!File.Exists(change.LocalItem)) throw new InvalidOperationException("挂起文件不存在：" + change.LocalItem);
-                TfvcContent.AppendFile(change.LocalItem, "本地内容（修改后）", body, identity);
-            }
-            if (body.Length > 200000) throw new InvalidOperationException("TFVC 变更过大，请手工指定更小的项目目录后重试。");
-        }
-        return new ChangeSnapshot(root, body.ToString(), identity.ToString(), "TFVC / " + workspace.Name,
-            changes.Length + " 项挂起更改；范围：" + root + "（递归，不使用 Team Explorer 的勾选状态）", files);
+        var selection = await GetSelectionAsync(root, token).ConfigureAwait(false);
+        var snapshot = await Task.Run(() => Read(root, selection.Workspace,
+            GetCurrentChanges(selection.Workspace, selection.Changes), token, includeDiff, capture), token).ConfigureAwait(false);
+        await EnsureSelectionUnchangedAsync(root, selection.Workspace, selection.Changes, token).ConfigureAwait(false);
+        return snapshot;
     }
 
-    public Task<string> CommitAsync(ChangeSnapshot expected, string message, CancellationToken token) => Task.Run(() => {
+    private static async Task<(Workspace Workspace, PendingChange[] Changes)> GetSelectionAsync(string root, CancellationToken token)
+    {
+        await ThreadHelper.JoinableTaskFactory.SwitchToMainThreadAsync(token);
+        const string openPendingChanges = "无法读取 TFVC 包含项。请在 Team Explorer 打开“挂起的更改”，等待清单加载后重试。";
+        var dte = ServiceProvider.GlobalProvider.GetService(typeof(DTE)) as DTE;
+        Workspace? workspace;
+        PendingChange[]? included;
+        try {
+            // Use the Team Explorer automation object supplied by the running VS instance.
+            var versionControl = dte?.GetObject("Microsoft.VisualStudio.TeamFoundation.VersionControl.VersionControlExt");
+            var pendingChanges = GetAutomationProperty(versionControl, "PendingChanges");
+            workspace = GetAutomationProperty(pendingChanges, "Workspace") as Workspace;
+            included = (GetAutomationProperty(pendingChanges, "IncludedChanges") as PendingChange[])?.ToArray();
+        } catch (Exception ex) when (ex is COMException || ex is MissingMethodException || ex is TargetInvocationException) {
+            throw new InvalidOperationException(openPendingChanges, ex);
+        }
+        if (workspace == null || included == null) throw new InvalidOperationException(openPendingChanges);
+
+        return await Task.Run(() => {
+            if (!workspace.IsLocalPathMapped(root))
+                throw new InvalidOperationException("此目录未映射到 Team Explorer 当前显示的 TFVC 工作区。请切换工作区或选择已映射的目录。");
+            var directory = root.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
+            var prefix = directory + Path.DirectorySeparatorChar;
+            var changes = included.Where(change => {
+                var localItem = change.LocalItem;
+                if (string.IsNullOrEmpty(localItem)) localItem = workspace.TryGetLocalItemForServerItem(change.ServerItem);
+                if (string.IsNullOrEmpty(localItem)) return false;
+                var fullPath = Path.GetFullPath(localItem).TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
+                return fullPath.Equals(directory, StringComparison.OrdinalIgnoreCase) ||
+                    fullPath.StartsWith(prefix, StringComparison.OrdinalIgnoreCase);
+            }).OrderBy(ChangeIdentity, StringComparer.Ordinal).ToArray();
+            return (workspace, changes);
+        }, token).ConfigureAwait(false);
+    }
+
+    private static object? GetAutomationProperty(object? target, string name) =>
+        target?.GetType().InvokeMember(name, BindingFlags.GetProperty, null, target, null);
+
+    private static string WorkspaceIdentity(Workspace workspace) =>
+        workspace.VersionControlServer.TeamProjectCollection.Uri + "|" + workspace.Name + "|" + workspace.OwnerName;
+
+    private static string ChangeIdentity(PendingChange change) =>
+        $"{change.ServerItem}|{change.SourceServerItem}|{change.LocalItem}|{change.PendingChangeId}|{change.Version}|{change.ChangeType}|{change.ItemType}";
+
+    private static async Task EnsureSelectionUnchangedAsync(string root, Workspace workspace, PendingChange[] changes, CancellationToken token)
+    {
+        var current = await GetSelectionAsync(root, token).ConfigureAwait(false);
+        if (WorkspaceIdentity(current.Workspace) != WorkspaceIdentity(workspace) ||
+            !current.Changes.Select(ChangeIdentity).SequenceEqual(changes.Select(ChangeIdentity)))
+            throw new InvalidOperationException(SelectionChanged);
+    }
+
+    private static PendingChange[] GetCurrentChanges(Workspace workspace, PendingChange[] included)
+    {
+        if (included.Length == 0) return included;
+        var paths = included.Select(change => change.ServerItem).Distinct(StringComparer.OrdinalIgnoreCase).ToArray();
+        var pending = workspace.GetPendingChanges(paths, RecursionType.None, includeDownloadInfo: true).ToLookup(ChangeIdentity);
+        return included.Select(change => pending[ChangeIdentity(change)].SingleOrDefault() ??
+            throw new InvalidOperationException(SelectionChanged)).ToArray();
+    }
+
+    private static ChangeSnapshot Read(string root, Workspace workspace, PendingChange[] changes, CancellationToken token,
+        bool includeDiff, TextWriter? capture = null)
+    {
+        var files = changes.Select(change => new ChangeFile(change.ServerItem, change.ChangeType.ToString())).ToArray();
+        var diff = includeDiff ? new List<TfvcFileChange>(changes.Length) : null;
+        var fileBudget = Math.Min(MaxFileDiffCharacters, MaxSnapshotDiffCharacters / Math.Max(1, changes.Length));
+        var readText = includeDiff || capture != null;
+        var identity = new StringBuilder(WorkspaceIdentity(workspace));
+        foreach (var change in changes) {
+            token.ThrowIfCancellationRequested();
+            identity.Append('\n').Append(ChangeIdentity(change));
+            TfvcContent? before = null;
+            TfvcContent? after = null;
+            if (change.ItemType != ItemType.Folder) {
+                if (!change.IsAdd) {
+                    var temp = Path.GetTempFileName();
+                    try { change.DownloadBaseFile(temp); before = TfvcContent.ReadFile(temp, readText); }
+                    finally { File.Delete(temp); }
+                }
+                if (!change.IsDelete) {
+                    if (!File.Exists(change.LocalItem)) throw new InvalidOperationException("挂起文件不存在：" + change.LocalItem);
+                    after = TfvcContent.ReadFile(change.LocalItem, readText);
+                }
+                identity.Append('|').Append(before?.Fingerprint).Append('|').Append(after?.Fingerprint);
+            }
+            if (readText) {
+                var detail = TfvcContent.CreateChange(change.ServerItem, change.ChangeType.ToString(), change.SourceServerItem,
+                    before, after, capture == null ? fileBudget : int.MaxValue, token);
+                diff?.Add(detail);
+                if (capture != null) detail.WriteTo(capture);
+            }
+        }
+        return new ChangeSnapshot(root, "", identity.ToString(), "TFVC / " + workspace.Name,
+            changes.Length + " 项 Team Explorer 包含的更改；范围：" + root + "（递归）", files, diff);
+    }
+
+    public async Task<string> CommitAsync(ChangeSnapshot expected, string message, CancellationToken token)
+    {
         if (string.IsNullOrWhiteSpace(message)) throw new InvalidOperationException("签入说明不能为空。");
-        var current = Read(expected.Root, token);
-        if (current.Fingerprint != expected.Fingerprint || string.IsNullOrWhiteSpace(current.Diff))
-            throw new InvalidOperationException("TFVC 挂起更改已变化，请重新读取并生成。");
-        var workspace = Open(expected.Root);
-        var pending = workspace.GetPendingChanges(expected.Root, RecursionType.Full);
-        var evaluation = workspace.EvaluateCheckin(CheckinEvaluationOptions.All, pending, pending, message, null, null);
-        if (evaluation.Conflicts.Length != 0 || evaluation.NoteFailures.Length != 0 || evaluation.PolicyFailures.Length != 0 || evaluation.PolicyEvaluationException != null)
-            throw new InvalidOperationException("TFVC 签入检查未通过（冲突、必填说明或团队策略）。说明已保留，请复制到 Team Explorer 完成检查及签入。");
-        // Do not override policies, provide fabricated work items, or bypass gated check-in.
-        var id = workspace.CheckIn(pending, message);
+        var selection = await GetSelectionAsync(expected.Root, token).ConfigureAwait(false);
+        var workspace = selection.Workspace;
+        var pending = await Task.Run(() => {
+            var changes = GetCurrentChanges(workspace, selection.Changes);
+            var current = Read(expected.Root, workspace, changes, token, includeDiff: false);
+            if (current.Fingerprint != expected.Fingerprint || changes.Length == 0)
+                throw new InvalidOperationException(SelectionChanged);
+            var evaluation = workspace.EvaluateCheckin(CheckinEvaluationOptions.All, changes, changes, message, null, null);
+            if (evaluation.Conflicts.Length != 0 || evaluation.NoteFailures.Length != 0 || evaluation.PolicyFailures.Length != 0 || evaluation.PolicyEvaluationException != null)
+                throw new InvalidOperationException("TFVC 签入检查未通过（冲突、必填说明或团队策略）。说明已保留，请复制到 Team Explorer 完成检查及签入。");
+            return changes;
+        }, token).ConfigureAwait(false);
+
+        await EnsureSelectionUnchangedAsync(expected.Root, workspace, selection.Changes, token).ConfigureAwait(false);
+        var id = await Task.Run(() => workspace.CheckIn(pending, message), token).ConfigureAwait(false);
         if (id <= 0) throw new InvalidOperationException("未返回有效 Changeset，请在 Team Explorer 检查门控签入或服务器状态后再操作。");
         return "TFVC 已签入服务器，Changeset " + id;
-    }, token);
+    }
 }
