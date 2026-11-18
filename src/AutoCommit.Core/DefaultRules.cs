@@ -14,6 +14,7 @@ public static class DefaultRules
 - type 只能使用 feat、fix、docs、refactor、test、chore。
 - feat 表示新增功能；fix 表示缺陷修复；docs 表示文档；refactor 表示重构；test 表示测试；chore 表示构建、依赖或维护。
 - 选择最能代表主要变更的类型。scope 使用实际模块名，不编造模块。
+- 标题概括整次提交的主要改动。涉及多个独立模块时，在正文中分条列出各模块的关键变化。
 - 标题不超过 72 个字符，使用具体动词，不使用“更新代码”等空泛表述，不以句号结尾。
 
 ## 正文
