@@ -10,3 +10,5 @@
 扩展仅读取 Git 暂存区，生成前后检查快照；不自动暂存、提交或推送。生成后若调整暂存内容，请重新生成说明，再使用 VS Code 提交。生成会把暂存差异和规范发送到配置的模型服务。`.auto/commit-rules.md` 与 Visual Studio 插件共用；若不存在，使用内置规范。VS Code 使用自己的凭据存储，首次使用需重新填写 API Key。
 
 开发验证：在本目录运行 `npm test`，用 `npm run package` 打包 VS Code 专用 VSIX。
+
+正式本地发布请从仓库根目录运行 `scripts/Publish-Release.ps1 -Version X.Y.Z`，该命令会同时生成 Visual Studio 2019、Visual Studio 2022 和 VS Code 的安装包，并集中保存到 `releases/X.Y.Z`。

@@ -4,15 +4,11 @@
 
 AI 提交助手原型。Visual Studio 2019（16.x，x86）与 Visual Studio 2022 17.14（x64）使用共享 C# 代码；VS Code 桌面版使用独立扩展，并共用项目中的 `.auto` 模型配置与提交规范。
 
-当前仓库可下载的安装包：
+当前三个平台的安装包、版本和校验值见[最新本地发布](releases/LATEST.md)。Visual Studio 和 VS Code 的 VSIX 互不通用，均尚未完成 GUI 实机验收；VS Code 的使用方式见[扩展说明](src/AutoCommit.Vscode/README.md)。
 
-| 环境 | 最新现有安装包 | 功能与验证状态 |
-| --- | --- | --- |
-| VS 2019 | [0.6.1](releases/0.6.1/AutoCommit-VS2019-0.6.1.vsix) | Git；TFVC 代码已加入，但未与真实 TFS 服务联调 |
-| VS 2022 17.14 | [0.5.0](releases/0.5.0/AutoCommit-VS2022-0.5.0.vsix) | Git；仓库暂无 0.6.1 的 VS 2022 发布包 |
-| VS Code 桌面版 | [0.1.0](releases/vscode-0.1.0/AutoCommit-VSCode-0.1.0.vsix) | Git 暂存变更生成说明，写入原生提交框；尚未完成 VS Code GUI 实机验收 |
+## 0.6.2 本地批量发布
 
-Visual Studio 两个版本均未完成 VS 实机验收，安装包未签名。VS 2022 源码清单的版本为 0.6.1，不能据此认为仓库已提供对应安装包。VS Code 的使用方式见 [扩展说明](src/AutoCommit.Vscode/README.md)；其 VSIX 与 Visual Studio 的 VSIX 不通用。
+VS 2019、VS 2022 17.14 和 VS Code 桌面版的 0.6.2 安装包集中在 [`releases/0.6.2`](releases/0.6.2/README.txt)。Visual Studio Release 重建为 0 警告、0 错误；.NET 测试 19 项和 VS Code Node 测试 4 项通过。TFVC 真实服务器、各编辑器 GUI 和真实模型仍待联调。安装包未签名，也未上传扩展市场。
 
 ## 0.6.1 Release：剪贴板重试
 
@@ -47,8 +43,7 @@ VS2019 新增 TFVC 工作区支持，使用 VS 安装的 Team Explorer 客户端
 
 **0.5.0 历史支持边界：TFS/Azure DevOps 托管的 Git 支持；TFVC 在 VS2019 0.6.0 新增。** `.auto` 配置可用于 Git 与 TFVC 范围。
 
-Release 构建命令：`dotnet build AutoCommit.sln -c Release -t:Rebuild`。
-发布文件位于 `releases/0.5.0`，含 VS 2019、VS 2022 独立 VSIX 及 SHA-256 校验值。安装包未做发布者签名，未上传市场；Release 指构建配置，不表示已通过 VS 实机验收。
+0.5.0 的历史发布文件位于 `releases/0.5.0`，含 VS 2019、VS 2022 独立 VSIX 及 SHA-256 校验值。Release 指构建配置，不表示已通过 VS 实机验收。
 
 ## 0.4.0 交互更新
 
@@ -108,7 +103,7 @@ npm test
 npm run package
 ```
 
-生成的 VS Code 专用 VSIX 可通过“扩展：从 VSIX 安装”安装；本地发布包位于 `releases/vscode-0.1.0`。该版本使用 VS Code 原生提交框，不执行自动提交或推送。
+生成的 VS Code 专用 VSIX 可通过“扩展：从 VSIX 安装”安装；当前本地发布包见[最新本地发布](releases/LATEST.md)。该版本使用 VS Code 原生提交框，不执行自动提交或推送。
 
 ```powershell
 dotnet build AutoCommit.sln
@@ -118,6 +113,16 @@ dotnet test tests/AutoCommit.Tests/AutoCommit.Tests.csproj
 需要 Windows 和 .NET 8 SDK。SDK 安装在本机 `%LOCALAPPDATA%/AutoCommit/dotnet`，未修改全局 PATH；可用该目录下的 `dotnet.exe` 执行上述命令。
 
 源码构建使用 .NET 8 SDK，或者配置相应 SDK 的 Visual Studio 2022 开发环境；使用 Visual Studio 开发时需要安装“.NET 桌面开发”和“Visual Studio 扩展开发”工作负载。支持安装到 VS 2019 不意味着源码支持直接由 VS 2019 编译（源码使用现代 C# 语法）。命令行构建只生成安装包，不自动部署到 VS。
+
+## 本地批量发布
+
+以后发布新版本时，从仓库根目录运行同一个命令，并使用新的三段式版本号：
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\Publish-Release.ps1 -Version X.Y.Z
+```
+
+脚本统一更新 VS2019、VS2022 清单及 VS Code 的 `package.json`/锁文件版本，运行 Visual Studio Release 重建、.NET 与 Node 测试、VS Code 打包，并核对三个安装包内部版本。通过后将全部 VSIX、`SHA256SUMS.txt` 和说明放入 `releases/X.Y.Z`，同时更新 [`releases/LATEST.md`](releases/LATEST.md)。已有同名发布目录时脚本会停止，避免覆盖。此流程仅发布到本仓库的 `releases` 目录；市场上传与 GUI/TFVC 实机验收另行进行。
 
 ## 验证范围与下一阶段
 
