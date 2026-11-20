@@ -1,6 +1,6 @@
 # AutoCommit 运行逻辑
 
-本文以 0.6.4 的生成和签入流程为基准。安装入口、构建和发布命令见[项目 README](../README.md)。
+本文描述 v1.0.0 的生成和签入流程。安装入口、构建和发布命令见[项目 README](../README.md)。
 
 ## 总体流程
 
@@ -26,7 +26,7 @@ flowchart TD
 | 平台 | 运行入口 | 变更来源 | 提交方式 |
 | --- | --- | --- | --- |
 | Visual Studio 2019、2022 17.14 | 「工具 → AutoCommit 提交助手」 | Git 暂存区，或 Team Explorer 的 TFVC 包含项 | 可复制说明，也可确认后执行本地 Git 提交或 TFVC 服务器签入 |
-| VS Code 桌面版 | 源代码管理视图或「AutoCommit: 生成提交说明」命令 | VS Code 内置 Git 扩展提供仓库列表，AutoCommit 通过 Git 命令读取暂存区 | 写入原生源代码管理提交框，由用户发起提交 |
+| VS Code 桌面版 | 源代码管理视图或「AutoCommit: 生成提交说明」命令；也可运行固定示例生成命令测试模型 | VS Code 内置 Git 扩展提供仓库列表，AutoCommit 通过 Git 命令读取暂存区；示例命令使用固定差异 | 写入原生源代码管理提交框，由用户发起提交；示例结果只显示通知，不读取仓库内容 |
 
 ## 确定变更范围
 
@@ -114,4 +114,4 @@ VS Code 在「输出」面板的 AutoCommit 日志通道记录运行信息。Vis
 | Visual Studio 配置和生成 | [ProjectConfiguration.cs](../src/AutoCommit.Core/ProjectConfiguration.cs)、[Generation.cs](../src/AutoCommit.Core/Generation.cs)、[BatchSummarizer.cs](../src/AutoCommit.Core/BatchSummarizer.cs) |
 | VS Code 命令、Git 快照、模型和分批 | [extension.js](../src/AutoCommit.Vscode/extension.js)、[core.js](../src/AutoCommit.Vscode/lib/core.js)、[batch.js](../src/AutoCommit.Vscode/lib/batch.js) |
 
-0.6.4 发布时，26 项 .NET 测试和 11 项 Node 测试通过。测试覆盖真实 Git 暂存差异、超过 32 MiB 的暂存差异捕获、分批预算和合并、模型失败兜底，以及 VS Code 确认和执行暂存的流程。模型调用使用模拟响应，真实模型、编辑器 GUI 和 TFVC 服务器签入仍待联调。详见 [0.6.4 发布说明](https://github.com/Haiezan/AutoCommit/releases/tag/v0.6.4)。
+v1.0.0 发布时，33 项 .NET 测试和 19 项 VS Code 测试通过。测试覆盖真实 Git 暂存差异、超过 32 MiB 的差异捕获、预算内分批和摘要合并、超时重试与缩小批次、模型失败兜底、取消，以及 VS Code 空暂存区确认和暂存状态变化处理。模型调用使用模拟响应；本次发布未完成编辑器 GUI、真实模型服务和 TFVC 服务器联调。发布说明见 [v1.0.0 发布记录](../releases/1.0.0/RELEASE_NOTES.md)。
