@@ -5,6 +5,7 @@ using System.IO;
 using System.Linq;
 using System.Net;
 using System.Net.Http;
+using System.Text.RegularExpressions;
 using System.Threading;
 using System.Threading.Tasks;
 using AutoCommit.Core;
@@ -52,6 +53,7 @@ public class GenerationTests
         Assert.Contains("Reply OK.", handler.Body);
         Assert.DoesNotContain("stagedDiff", handler.Body);
         Assert.DoesNotContain("commitRules", handler.Body);
+        Assert.Null(JObject.Parse(handler.Body)["enable_thinking"]);
     }
     [Fact]
     public async Task SendsRulesAndDiffToConfiguredEndpoint()
@@ -154,6 +156,115 @@ public class GenerationTests
         handler.OnCall = _ => cancellation.Cancel();
         await Assert.ThrowsAnyAsync<OperationCanceledException>(() => generator.GenerateAsync(snapshot, "rules", settings, "", cancellation.Token));
         Assert.Equal(3, handler.Calls);
+    }
+
+    [Theory]
+    [InlineData(true)]
+    [InlineData(false)]
+    public async Task TimeoutSplitsDiffAndKeepsCompletedFacts(bool direct)
+    {
+        var lines = Enumerable.Range(0, 200).Select(index => $"+marker-{index} sample change with additional text\n").ToArray();
+        var diff = "文件：$/sample\n@@ -1,1 +1,200 @@\n" + string.Concat(lines);
+        var snapshot = direct ? new ChangeSnapshot("repo", diff) : new ChangeSnapshot("repo", "",
+            tfvcChanges: new[] { new TfvcFileChange("文件：$/sample", hasOmittedHunks: true) });
+        using var capture = direct ? null : new StringReader(diff);
+        var handler = new Handler {
+            Reply = "{\"choices\":[{\"message\":{\"content\":\"变更事实\"}}],\"usage\":{\"prompt_tokens\":12}}",
+            StatusForCall = call => !direct && call == 2 ? HttpStatusCode.RequestTimeout : HttpStatusCode.OK,
+            OnCall = call => { if (direct && call == 1) throw new TaskCanceledException(); }
+        };
+        using var client = new HttpClient(handler);
+        var settings = new ModelSettings {
+            BaseUrl = "https://example.test/v1", Model = "model", MaxInputCharacters = direct ? 48000 : 4300, EnableThinking = false
+        };
+        var result = await new CommitGenerator(client).GenerateAsync(snapshot, "项目规范", settings, "", default, capture);
+        Assert.Null(result.FallbackReason);
+        Assert.Equal(handler.Calls, result.Requests);
+        Assert.Null(result.InputTokens);
+        Assert.All(handler.Bodies, body => Assert.False((bool)JObject.Parse(body)["enable_thinking"]!));
+        var payloads = handler.Bodies.Select(body => ReadPayload(body, settings.MaxInputCharacters)).ToArray();
+        var successfulDiffs = payloads.Where((_, index) => index != (direct ? 0 : 1))
+            .Select(payload => (string?)payload["stagedDiff"]).Where(payload => payload != null).ToArray();
+        Assert.True(successfulDiffs.Length > 2);
+        var successfulLines = successfulDiffs.SelectMany(part => Regex.Matches(part!, @"(?m)^\+marker-.*\n")
+            .Cast<Match>().Select(match => match.Value));
+        Assert.Equal(lines, successfulLines);
+        Assert.Equal("项目规范", (string?)payloads[^1]["commitRules"]);
+        Assert.Contains("变更事实", (string?)payloads[^1]["changeSummaries"]);
+    }
+
+    [Fact]
+    public async Task PersistentTimeoutStopsAfterTwoSplitsAndReportsBatch()
+    {
+        var diff = string.Concat(Enumerable.Repeat("+sample line with sufficient text\n", 2000));
+        var handler = new Handler { StatusForCall = _ => HttpStatusCode.GatewayTimeout };
+        using var client = new HttpClient(handler);
+        var settings = new ModelSettings { Model = "local", AllowHttp = true, MaxInputCharacters = 8000 };
+        var result = await new CommitGenerator(client).GenerateAsync(new ChangeSnapshot("repo", diff), "规则", settings, "", default);
+        Assert.Equal(3, result.Requests);
+        Assert.Matches(@"汇总第 1\.1\.1 批变更.*模型请求超时.*HTTP 504", result.FallbackReason!);
+        Assert.Contains("本地摘要", result.Text);
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task RetriesTimedOutCompositionWithoutRestarting(bool batched)
+    {
+        var handler = new Handler();
+        var failures = 0;
+        handler.StatusForCall = _ => ReadPayload(handler.Body, 8000)["commitRules"] != null && failures++ == 0
+            ? HttpStatusCode.GatewayTimeout : HttpStatusCode.OK;
+        using var client = new HttpClient(handler);
+        var settings = new ModelSettings { Model = "local", AllowHttp = true, MaxInputCharacters = 8000 };
+        var diff = batched ? new string('x', 16000) : "+change";
+        var result = await new CommitGenerator(client).GenerateAsync(new ChangeSnapshot("repo", diff), "规则", settings, "", default);
+        Assert.Null(result.FallbackReason);
+        Assert.Equal(2, failures);
+        Assert.Equal(handler.Bodies[^2], handler.Bodies[^1]);
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task FinalRequestUsesFileFactsAndFallbackRetainsThem(bool failFinal)
+    {
+        var names = Enumerable.Range(0, 8).Select(i => $"$/module{i}/code.cs").ToArray();
+        var files = names.Select(path => new ChangeFile(path, "修改")).ToArray();
+        var snapshot = new ChangeSnapshot("repo", "", files: files,
+            tfvcChanges: new[] { new TfvcFileChange("文件：" + names[0], hasOmittedHunks: true) });
+        using var capture = new StringReader(string.Concat(names.Select(path =>
+            $"文件：{path}；操作：修改；模型输入：完整差异\n+" + new string('X', 400) + "\n")));
+        var handler = new Handler();
+        var logs = new List<string>();
+        string? final = null;
+        handler.StatusForCall = _ => {
+            var payload = ReadPayload(handler.Body, 2400);
+            if (payload["commitRules"] != null) {
+                final = (string?)payload["changeSummaries"];
+                return failFinal ? HttpStatusCode.BadRequest : HttpStatusCode.OK;
+            }
+            Assert.Null(payload["changeSummaries"]);
+            var ids = Regex.Matches((string)payload["stagedDiff"]!, @"(?m)^\[F\d+\]$").Cast<Match>();
+            var facts = string.Join("\n", ids.Select(m => m.Value + " 模块事实"));
+            handler.Reply = Newtonsoft.Json.JsonConvert.SerializeObject(new { choices = new[] { new { message = new { content = facts } } } });
+            return HttpStatusCode.OK;
+        };
+        using var client = new HttpClient(handler);
+        var settings = new ModelSettings { Model = "local", AllowHttp = true, MaxInputCharacters = 2400 };
+        var result = await new CommitGenerator(client).GenerateAsync(snapshot, "项目规范", settings, "secret-marker", default, capture, log: logs.Add);
+        Assert.NotNull(final);
+        foreach (var name in names) Assert.Contains(name, final);
+        Assert.True(result.Requests < names.Length);
+        if (failFinal) {
+            Assert.Contains("部分摘要", result.Text);
+            Assert.Contains("模块事实", result.Text);
+        } else Assert.Null(result.FallbackReason);
+        var log = string.Join("\n", logs);
+        Assert.Contains("超时 0 次", log);
+        Assert.DoesNotContain("secret-marker", log);
+        Assert.DoesNotContain("模块事实", log);
+        Assert.DoesNotContain("$/module", log);
     }
 
     private static JObject ReadPayload(string body, int budget)

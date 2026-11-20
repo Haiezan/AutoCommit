@@ -55,7 +55,9 @@ internal sealed class CommitControl : UserControl
     private readonly TextBlock attempt = new TextBlock { TextWrapping = TextWrapping.Wrap };
     private string projectRoot = "";
     private string loadedModelJson = "";
+    private int requestTimeoutSeconds = 240;
     private int inputBudget = 48000;
+    private bool? enableThinking;
     private bool generationPending;
     private bool updatingResult;
     private bool initialized;
@@ -65,7 +67,7 @@ internal sealed class CommitControl : UserControl
     private string loadedRuleText = "";
     private CancellationTokenSource? cancellation;
     private readonly RepositoryProvider git = new RepositoryProvider();
-    private static readonly HttpClient Client = new HttpClient(new HttpClientHandler { AllowAutoRedirect = false }) { Timeout = TimeSpan.FromSeconds(120) };
+    private static readonly HttpClient Client = new HttpClient(new HttpClientHandler { AllowAutoRedirect = false }) { Timeout = Timeout.InfiniteTimeSpan };
 
     public CommitControl()
     {
@@ -92,6 +94,14 @@ internal sealed class CommitControl : UserControl
         Add(settingsPanel, "API Key", key);
         key.ToolTip = "Key 按项目与服务地址隔离，在本机加密保存；无认证的本地服务可留空。";
         settingsPanel.Children.Add(allowHttp);
+        var openLog = new Button { Content = "查看运行日志" };
+        openLog.Click += (sender, args) => {
+            try {
+                Directory.CreateDirectory(RunLog.DirectoryPath);
+                System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo(RunLog.DirectoryPath) { UseShellExecute = true });
+            } catch (Exception ex) { status.Text = "无法打开日志目录：" + ex.Message; }
+        };
+        settingsPanel.Children.Add(openLog);
         var configActions = new WrapPanel { Margin = new Thickness(0, 8, 0, 0) };
         configActions.Children.Add(test); configActions.Children.Add(save); settingsPanel.Children.Add(configActions);
         settingsPanel.Children.Add(new TextBlock { Text = "测试连接仅发送固定测试文本，可能产生少量调用费用。", TextWrapping = TextWrapping.Wrap });
@@ -155,14 +165,14 @@ internal sealed class CommitControl : UserControl
             draft.Undo(); ApplyDraft(); status.Text = "已恢复上一版说明。提交前会重新检查变更。";
         };
         cancel.Click += (s, e) => cancellation?.Cancel();
-        test.Click += async (s, e) => await RunAsync(async token => {
+        test.Click += async (s, e) => await RunAsync("测试连接", async (token, run) => {
             modelStatus.Text = "正在验证模型连接…";
             testUsage.Text = "连接测试：正在等待服务端用量…";
             var response = await new CommitGenerator(Client).TestConnectionAsync(CurrentSettings(), key.Password, token);
             testUsage.Text = "连接测试成功 · " + response.Seconds.ToString("F1") + " 秒 · 输入 " + TokenValue(response.InputTokens) + " / 输出 " + TokenValue(response.OutputTokens) + " Token";
             modelStatus.Text = "连接成功：当前地址、认证及模型可正常调用。可保存配置。";
-        }, modelStatus);
-        save.Click += async (s, e) => await RunAsync(token => {
+        }, modelStatus, operationTimeout: false);
+        save.Click += async (s, e) => await RunAsync("保存配置", (token, run) => {
             if (!ValidateSettings()) throw new InvalidOperationException(validation.Text);
             if (!string.IsNullOrEmpty(projectRoot) && !Directory.Exists(ProjectConfiguration.Folder(projectRoot)) &&
                 !Confirm("创建项目配置？", "将在 " + ProjectConfiguration.Folder(projectRoot) + " 创建 model.json、commit-rules.md、.gitignore 和 README.md。API Key 仅保存在本机。", "保存项目配置")) {
@@ -173,14 +183,14 @@ internal sealed class CommitControl : UserControl
             status.Text = string.IsNullOrEmpty(projectRoot) ? "尚未识别仓库，已保存为全局默认配置。" : "已保存到 .auto/model.json；API Key 已在本机加密保存。";
             return Task.CompletedTask;
         });
-        detect.Click += async (s, e) => await RunAsync(async token => {
-            await ThreadHelper.JoinableTaskFactory.SwitchToMainThreadAsync(token); manual.IsChecked = false; directory.Text = RepositoryDiscovery.FindCurrent(); await ReadChangesAsync(token);
+        detect.Click += async (s, e) => await RunAsync("识别项目", async (token, run) => {
+            await ThreadHelper.JoinableTaskFactory.SwitchToMainThreadAsync(token); manual.IsChecked = false; directory.Text = RepositoryDiscovery.FindCurrent(); await ReadChangesAsync(token, run);
         }, repositoryStatus);
-        refresh.Click += async (s, e) => await RunAsync(async token => {
+        refresh.Click += async (s, e) => await RunAsync("读取变更", async (token, run) => {
             if (manual.IsChecked != true) directory.Text = RepositoryDiscovery.FindCurrent();
-            await ReadChangesAsync(token);
+            await ReadChangesAsync(token, run);
         }, repositoryStatus);
-        generate.Click += async (s, e) => await RunAsync(async token => {
+        generate.Click += async (s, e) => await RunAsync("生成提交说明", async (token, run) => {
             var selected = snapshot ?? throw new InvalidOperationException("请先读取变更。");
             var settings = CurrentSettings();
             var currentRules = rules.Text;
@@ -194,8 +204,10 @@ internal sealed class CommitControl : UserControl
                 FileMode.CreateNew, FileAccess.ReadWrite, FileShare.None, 8192, FileOptions.DeleteOnClose) : null;
             status.Text = needsBatching ? "正在校验并读取完整变更以准备分批…" : "正在校验变更…";
             ChangeSnapshot current;
+            var snapshotTimer = System.Diagnostics.Stopwatch.StartNew();
             using (var writer = capture == null ? null : new StreamWriter(capture, new UTF8Encoding(false), 8192, leaveOpen: true))
                 current = await git.ReadAsync(directory.Text, token, includeTfvcDiff: false, capture: writer);
+            run.Write($"生成前读取快照 {selected.Files.Count} 项 {snapshotTimer.ElapsedMilliseconds} ms");
             EnsureSame(selected, current);
             if (capture != null) capture.Position = 0;
             using var reader = capture == null ? null : new StreamReader(capture, Encoding.UTF8, false, 8192, leaveOpen: true);
@@ -203,17 +215,20 @@ internal sealed class CommitControl : UserControl
             draftState.Text = "生成中 · 原内容已保留"; cancel.Content = "取消生成";
             status.Text = "正在生成，原内容已保留…";
             GenerationResult response;
-            var batchProgress = new Progress<string>(message => { if (generationPending) status.Text = message; });
+            var batchProgress = new Progress<string>(message => { run.Write(message); if (generationPending) status.Text = message; });
             try {
                 response = await Task.Run(() => new CommitGenerator(Client).GenerateAsync(selected, currentRules, settings,
-                    apiKey, token, reader, batchProgress), token);
+                    apiKey, token, reader, batchProgress, run.Write), token);
                 modelStatus.Text = response.FallbackReason == null ? "模型：调用成功" : "模型：" + response.FallbackReason;
             }
             catch (Exception ex) { modelStatus.Text = "模型调用失败：" + ex.Message; throw; }
 
             generationPending = false;
             attempt.Text = $"本次模型请求 {response.Requests} 次 · 输入 {TokenValue(response.InputTokens)} / 输出 {TokenValue(response.OutputTokens)} Token";
+            run.Write($"模型结束 请求 {response.Requests} 次");
+            snapshotTimer.Restart();
             current = await git.ReadAsync(directory.Text, token, includeTfvcDiff: false);
+            run.Write($"生成后读取快照 {snapshotTimer.ElapsedMilliseconds} ms");
             EnsureSame(selected, current);
             if (response.FallbackReason != null && !string.IsNullOrWhiteSpace(result.Text) &&
                 !Confirm("使用本地摘要？", response.FallbackReason + " 选择使用会替换现有说明。", "使用本地摘要")) {
@@ -221,8 +236,9 @@ internal sealed class CommitControl : UserControl
             }
             draft.Accept(response, selected); ApplyDraft();
             status.Text = response.FallbackReason == null ? "已生成，请核对提交规范及事实准确性。" : "已生成本地摘要。" + response.FallbackReason;
+            run.Write("草稿已回填");
         }, operationTimeout: false);
-        copy.Click += async (s, e) => await RunAsync(async token => {
+        copy.Click += async (s, e) => await RunAsync("复制说明", async (token, run) => {
             var text = result.Text;
             var copyReason = draft.Committed ? "此说明已用于提交。" : draft.Snapshot == null ? "此说明没有对应的已读取变更。" : "";
             if (copyReason.Length == 0) {
@@ -236,7 +252,7 @@ internal sealed class CommitControl : UserControl
             }
             if (copyReason.Length != 0) {
                 var choice = ConfirmStaleCopy(copyReason);
-                if (choice == CopyChoice.Reload) { await ReadChangesAsync(token); return; }
+                if (choice == CopyChoice.Reload) { await ReadChangesAsync(token, run); return; }
                 if (choice != CopyChoice.Copy) { status.Text = "已取消复制。"; return; }
             }
             var copied = await ClipboardRetry.TryWriteAsync(() => Clipboard.SetText(text), token);
@@ -247,7 +263,7 @@ internal sealed class CommitControl : UserControl
             }
             status.Text = copyReason.Length == 0 ? "已复制提交说明。" : "已按你的选择复制原说明，请核对后使用。";
         });
-        commit.Click += async (s, e) => await RunAsync(async token => {
+        commit.Click += async (s, e) => await RunAsync("提交或签入", async (token, run) => {
             var selected = draft.Snapshot ?? throw new InvalidOperationException("请先生成提交说明。");
             EnsureSame(selected, await git.ReadAsync(directory.Text, token, includeTfvcDiff: false));
             var message = result.Text;
@@ -261,18 +277,28 @@ internal sealed class CommitControl : UserControl
         Loaded += async (s, e) => {
             if (initialized) return; initialized = true;
             if (manual.IsChecked != true && cancellation == null)
-                await RunAsync(async token => { directory.Text = RepositoryDiscovery.FindCurrent(); await ReadChangesAsync(token); }, repositoryStatus);
+                await RunAsync("初始化读取", async (token, run) => { directory.Text = RepositoryDiscovery.FindCurrent(); await ReadChangesAsync(token, run); }, repositoryStatus);
         };
-        try { loadingSettings = true; var settings = SettingsStore.Load(); endpoint.Text = settings.BaseUrl; model.Text = settings.Model; allowHttp.IsChecked = settings.AllowHttp; key.Password = SettingsStore.LoadKey(); settingsSection.IsExpanded = string.IsNullOrWhiteSpace(settings.Model); settingsSaved = SettingsStore.HasGlobalSettings; UpdateConfigurationStatus(); }
+        try {
+            loadingSettings = true;
+            var settings = SettingsStore.Load();
+            endpoint.Text = settings.BaseUrl; model.Text = settings.Model; allowHttp.IsChecked = settings.AllowHttp;
+            requestTimeoutSeconds = settings.RequestTimeoutSeconds;
+            inputBudget = settings.MaxInputCharacters; enableThinking = settings.EnableThinking;
+            key.Password = SettingsStore.LoadKey(); settingsSection.IsExpanded = string.IsNullOrWhiteSpace(settings.Model);
+            settingsSaved = SettingsStore.HasGlobalSettings; UpdateConfigurationStatus();
+        }
         catch { status.Text = "无法加载本地设置，请重新填写。"; }
         finally { loadingSettings = false; }
         Unloaded += (s, e) => cancellation?.Cancel();
     }
 
-    private async Task ReadChangesAsync(CancellationToken token)
+    private async Task ReadChangesAsync(CancellationToken token, RunLog readLog)
     {
         snapshot = null; diff.Clear(); files.Clear();
+        readLog.Write("开始读取变更");
         var current = await git.ReadAsync(directory.Text, token);
+        readLog.Write($"读取完成 {current.Files.Count} 项");
         var modelPath = ProjectConfiguration.ModelPath(current.Root);
         var modelJson = File.Exists(modelPath) ? File.ReadAllText(modelPath) : "";
         if (!string.Equals(projectRoot, current.Root, StringComparison.OrdinalIgnoreCase) || loadedModelJson != modelJson) {
@@ -281,6 +307,8 @@ internal sealed class CommitControl : UserControl
             try {
                 endpoint.Text = projectSettings.BaseUrl; model.Text = projectSettings.Model;
                 allowHttp.IsChecked = projectSettings.AllowHttp; inputBudget = projectSettings.MaxInputCharacters;
+                enableThinking = projectSettings.EnableThinking;
+                requestTimeoutSeconds = projectSettings.RequestTimeoutSeconds;
                 key.Password = modelJson.Length == 0 ? "" : SettingsStore.LoadProjectKey(current.Root, projectSettings.BaseUrl);
             } finally { loadingSettings = false; }
             projectRoot = current.Root; loadedModelJson = modelJson;
@@ -469,14 +497,17 @@ internal sealed class CommitControl : UserControl
         }
     }
 
-    private ModelSettings CurrentSettings() => new ModelSettings { BaseUrl = endpoint.Text.Trim(), Model = model.Text.Trim(), AllowHttp = allowHttp.IsChecked == true, MaxInputCharacters = inputBudget };
+    private ModelSettings CurrentSettings() => new ModelSettings {
+        BaseUrl = endpoint.Text.Trim(), Model = model.Text.Trim(), AllowHttp = allowHttp.IsChecked == true,
+        RequestTimeoutSeconds = requestTimeoutSeconds, MaxInputCharacters = inputBudget, EnableThinking = enableThinking
+    };
 
     private void EnsureSame(ChangeSnapshot expected, ChangeSnapshot actual)
     {
         if (!string.Equals(expected.Root, actual.Root, StringComparison.OrdinalIgnoreCase) || expected.Fingerprint != actual.Fingerprint)
         { snapshot = null; UpdateActions(); throw new InvalidOperationException("仓库或选定的变更已变化。说明已保留，请重新读取并生成。"); }
     }
-    private async Task RunAsync(Func<CancellationToken, Task> action, TextBlock? operationStatus = null, bool operationTimeout = true)
+    private async Task RunAsync(string operation, Func<CancellationToken, RunLog, Task> action, TextBlock? operationStatus = null, bool operationTimeout = true)
     {
         if (cancellation != null) return;
         cancellation = operationTimeout ? new CancellationTokenSource(TimeSpan.FromMinutes(3)) : new CancellationTokenSource();
@@ -486,11 +517,18 @@ internal sealed class CommitControl : UserControl
         result.IsReadOnly = true; undo.IsEnabled = false;
         if (operationStatus != null) operationStatus.Text = "处理中…";
         status.Text = "处理中…";
-        try { await action(cancellation.Token); }
-        catch (OperationCanceledException) { status.Text = "操作已取消或超时；若已发送请求，服务端仍可能计费用量。"; }
-        catch (HttpRequestException) { status.Text = "连接失败，已有说明已保留。请检查服务地址、代理、防火墙及证书。"; }
-        catch (Exception ex) { status.Text = "操作失败，已有说明已保留。\n" + ex.Message; }
+        var run = new RunLog();
+        run.Write("开始 " + operation);
+        try { await action(cancellation.Token, run); }
+        catch (OperationCanceledException) {
+            run.Write("已取消或到时");
+            status.Text = !operationTimeout ? "操作已取消，原说明已保留。" :
+                "操作已取消或超时；若已发送请求，服务端仍可能计费用量。";
+        }
+        catch (HttpRequestException) { run.Write("连接失败"); status.Text = "连接失败，已有说明已保留。请检查服务地址、代理、防火墙及证书。"; }
+        catch (Exception ex) { run.Write("操作失败 " + ex.GetType().Name); status.Text = "操作失败，已有说明已保留。\n" + ex.Message; }
         finally {
+            run.Write("结束 " + operation);
             if (operationStatus != null && (status.Text.StartsWith("操作失败") || status.Text.StartsWith("连接失败") || status.Text.StartsWith("操作已取消"))) operationStatus.Text = status.Text;
             if (generationPending) { attempt.Text = "本次生成未获得用量，可能仍产生费用；原说明及其用量已保留。"; generationPending = false; }
             cancel.Content = "取消";

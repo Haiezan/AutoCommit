@@ -4,13 +4,27 @@
 
 AutoCommit 根据所选变更和项目规范生成可审核的提交说明。Visual Studio 2019（16.x，x86）与 Visual Studio 2022 17.14（x64）使用共享 C# 代码，支持 Git 和 TFVC。VS Code 桌面扩展支持 Git，并共用项目中的 `.auto` 模型配置与提交规范。
 
-下载见 [GitHub Release v0.6.4](https://github.com/Haiezan/AutoCommit/releases/tag/v0.6.4) 和[最新本地发布](releases/LATEST.md)。各平台使用各自的 VSIX。阅读[运行逻辑与流程图](docs/runtime.md)，或查看 [VS Code 使用说明](src/AutoCommit.Vscode/README.md)。
+下载见 [GitHub Release v1.0.0](https://github.com/Haiezan/AutoCommit/releases/tag/v1.0.0) 和[本地安装包及校验值](releases/LATEST.md)。各平台使用各自的 VSIX。阅读[运行逻辑与流程图](docs/runtime.md)，或查看 [VS Code 使用说明](src/AutoCommit.Vscode/README.md)。
 
-## 0.6.4 当前发布
+## v1.0.0 正式版本
 
-- VS Code 暂存区为空且有变更时，可以确认暂存全部变更并生成提交说明。已有暂存内容时直接生成，替换已有说明仍会确认。
-- 默认规范要求标题概括整次提交的主要改动，涉及多个独立模块时在正文列出各模块的关键变化。
-- Visual Studio Release 构建通过，26 项 .NET 测试与 11 项 VS Code 测试通过。编辑器 GUI、真实模型和 TFVC 服务器仍待联调。
+AutoCommit 将 Git 或 TFVC 变更、项目自己的提交规范和 OpenAI 兼容模型连接起来，生成供开发者审核的提交说明。Visual Studio 集成 Git 与 TFVC 工作流；VS Code 扩展读取 Git 暂存区，并把结果填入原生提交框。
+
+| 编辑器 | 仓库类型 | 审核后的操作 |
+| --- | --- | --- |
+| Visual Studio 2019、Visual Studio 2022 17.14 | Git、TFVC | 确认后在插件内执行本地 Git 提交或 TFVC 签入 |
+| VS Code 桌面版 | Git | 将说明回填到原生 Git 提交框，由用户执行提交 |
+
+主要功能：
+
+- **按所选范围读取变更。** Git 以暂存区为准，支持部分暂存；VS Code 可在空暂存区时经用户确认暂存全部变更。Visual Studio 的 TFVC 读取所选映射目录与 Team Explorer「包含的更改」的交集。
+- **按项目约定生成。** 使用 OpenAI 兼容的模型服务，可设置 Base URL、模型、请求超时、单次输入预算及可选思考参数。项目 `.auto/model.json` 和 `.auto/commit-rules.md` 优先于内置默认值；API Key 分别保存在 Windows DPAPI 或 VS Code SecretStorage 中。
+- **处理大型差异和超时。** 超过预算时分批提取逐文件事实，保留文件来源编号，按最终请求容量压缩相邻摘要，再结合项目规范生成。请求超时可重试或缩小批次；失败时提供标明覆盖范围的部分摘要或本地摘要。
+- **保护草稿与提交范围。** 生成前后校验变更快照，Visual Studio 提交或签入前再次核对；取消、快照变化或拒绝替换时保留原稿。Git hooks 与签名设置继续由 Git 处理。
+- **查看运行过程。** 显示阶段、进度、耗时和模型返回的 Token 用量；提供运行日志和固定文本连接测试。示例生成命令使用固定示例差异，不发送仓库内容。
+- **明确外发与写入行为。** 只有用户点击生成时才会发送所选变更及规范到配置的模型服务；HTTP 需显式允许。插件不会自动推送，也不会绕过 TFVC 团队策略。
+
+Release 构建通过，33 项 .NET 测试与 19 项 VS Code 测试通过，三个安装包版本及 SHA-256 校验值已核对。自动化测试不代替 Visual Studio / VS Code 实机 GUI 验收；真实模型服务和 TFVC 服务器也未在此次发布中联调。VS Code 包含工具报告未提供 LICENSE 文件，但打包成功。
 
 ## 历史版本
 
@@ -48,7 +62,7 @@ VS2019 新增 TFVC 工作区支持，使用 VS 安装的 Team Explorer 客户端
 
 首次成功识别并读取 Git 仓库时，在仓库根目录初始化 `.auto`。每个仓库共享一份配置，不为每个 csproj 重复创建。
 
-- `.auto/model.json`：BaseUrl、Model、AllowHttp、MaxInputCharacters，可纳入版本控制；不要填写 API Key。
+- `.auto/model.json`：BaseUrl、Model、AllowHttp、MaxInputCharacters，可纳入版本控制。对支持的模型可用 `EnableThinking` 显式开启或关闭思考。API Key 只在本机保存。
 - `.auto/commit-rules.md`：项目提交规范，可编辑并共享。第一次创建时优先复制原 `.commit-rules.md`，否则使用完整内置规范；之后以 `.auto` 为准，不覆盖已有文件。
 - `.auto/.gitignore`：排除常见本地凭据文件名，仅是辅助保护，不替代正确保管 Key。
 - Key 在插件设置页填写并保存至 `%LOCALAPPDATA%/AutoCommit/credentials`，使用 DPAPI 加密，按项目路径与服务地址隔离。换电脑、用户、项目路径或服务地址后需重新填写。旧的全局 Key 不自动复制到项目凭据。
@@ -104,7 +118,9 @@ VS2019 新增 TFVC 工作区支持，使用 VS 安装的 Team Explorer 客户端
 4. 核对文件清单和预览，点击「生成提交说明」。AutoCommit 将所选变更和规范发送到配置的模型服务。`MaxInputCharacters` 默认每次请求 48,000 字符，超出后会分批处理，实际发送的差异可以多于本地预览。详细流程见[生成与合并流程图](docs/runtime.md#分批生成与合并)。
 5. 审核说明和文件范围。可以复制到 IDE 的原生提交框，也可以在 Visual Studio 插件内确认后执行本地 Git 提交或 TFVC 签入。
 
-在分批模式下，进度区会显示当前批次和合并阶段，用户可以取消，模型用量按本次成功生成涉及的请求汇总。如果某个批次或最终请求失败，插件会根据文件清单提供标明「本地摘要」的草稿，并在替换现有说明前询问。用户取消或快照变化时保留原说明。
+运行日志位于 VS Code 的「输出 → AutoCommit」或 Visual Studio 的「模型设置 → 查看运行日志」。已提取的事实附带文件来源，超出最终请求预算时才压缩摘要。
+
+进度区会显示当前批次和合并阶段，用户可以取消。单次模型请求默认等待 240 秒，可在项目 .auto/model.json 中通过 `RequestTimeoutSeconds` 设置为 1 至 300 秒。小差异直接生成、摘要合并和最终生成超时时，插件会重试当前请求一次。较大的差异请求超时后，插件会缩小批次继续汇总，并保留已完成的摘要。超时提示包含阶段、输入大小和耗时。如果最终生成失败，插件用已提取事实生成「部分摘要」并列出覆盖尚未确认的文件。尚无提取结果时，插件按文件清单生成「本地摘要」。替换已有说明前会询问。用户取消或快照变化时保留原说明。
 
 插件不会自动暂存或推送；仅在用户明确确认后提交。提交执行期间禁用取消，避免中断 Git 写入后无法判断结果；Git hooks 或签名工具可能需要在外部完成交互。请避免提交期间在其他窗口并发修改暂存区；提交前检查不是跨进程事务锁，hooks 也可修改内容。点击生成才会发送所选变更与规范；请确认服务地址适合接收该仓库代码。当前版本没有自动敏感信息检测。
 

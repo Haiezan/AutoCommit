@@ -56,6 +56,7 @@ test('小变更只请求一次，预算无法容纳规范时生成本地摘要',
     assert.equal(String(url), 'http://localhost:11434/v1/chat/completions');
     assert.equal(options.redirect, 'manual');
     const body = JSON.parse(options.body);
+    assert.equal(Object.hasOwn(body, 'enable_thinking'), false);
     assert.match(body.messages[1].content, /staged_marker/);
     assert.match(body.messages[1].content, /项目规范/);
     return { ok: true, json: async () => ({ choices: [{ message: { content: 'fix: 修复错误' } }], usage: { prompt_tokens: 12 } }) };
@@ -73,7 +74,7 @@ test('小变更只请求一次，预算无法容纳规范时生成本地摘要',
 test('完整暂存差异分批发送后逐层合并，所有请求都遵守预算', async () => {
   const temporary = await fs.mkdtemp(path.join(os.tmpdir(), 'autocommit-batch-'));
   const capturePath = path.join(temporary, 'changes.diff');
-  const source = 'diff --git a/sample b/sample\n@@ -1,1 +1,1 @@\n+' + '"'.repeat(1500) + '🚀\n+NOT_IN_PREVIEW\n';
+  const source = 'diff --git a/sample b/sample\n@@ -1,1 +1,1 @@\n+' + '"'.repeat(6000) + '🚀\n+NOT_IN_PREVIEW\n';
   const snapshot = { diff: 'preview only', diffIsPartial: true, files: ['sample'] };
   const settings = { BaseUrl: 'https://example.test/v1', Model: 'model', MaxInputCharacters: 500 };
   const payloads = [];
@@ -92,7 +93,7 @@ test('完整暂存差异分批发送后逐层合并，所有请求都遵守预�
     assert.ok(leaves.length >= 4);
     assert.match(leaves.map(payload => payload.stagedDiff).join(''), /NOT_IN_PREVIEW/);
     assert.match(leaves.map(payload => payload.stagedDiff).join(''), /🚀/);
-    assert.equal(leaves.map(payload => payload.stagedDiff).join('').split('"').length - 1, 1500);
+    assert.equal(leaves.map(payload => payload.stagedDiff).join('').split('"').length - 1, 6000);
     assert.ok(payloads.slice(0, -1).some(payload => payload.changeSummaries));
     assert.equal(payloads.at(-1).commitRules, '项目规范');
     assert.ok(progress.some(message => message.includes('合并')));
@@ -123,6 +124,107 @@ test('分批失败提供本地摘要，用户取消时保留原说明', async ()
     controller.abort();
     return { ok: true, json: async () => ({ choices: [{ message: { content: '变更事实' } }] }) };
   }, controller.signal), { name: 'AbortError' });
+});
+
+for (const direct of [true, false]) {
+  test(`${direct ? '直接生成' : '后续批次'}超时后拆分差异，保留全部成功的变更事实`, async () => {
+    const lines = Array.from({ length: 200 }, (_, index) => `+marker-${index} sample change with additional text\n`);
+    const snapshot = { diff: 'diff --git a/sample b/sample\n@@ -1,1 +1,200 @@\n' + lines.join('') };
+    const settings = { BaseUrl: 'https://example.test/v1', Model: 'model',
+      MaxInputCharacters: direct ? 48000 : 4300, EnableThinking: false };
+    const successfulDiffs = [];
+    const progress = [];
+    let smallerBudget;
+    let calls = 0;
+    let finalData;
+    const result = await generateMessage(snapshot, '项目规范', settings, '', async (_url, options) => {
+      const { messages, enable_thinking } = JSON.parse(options.body);
+      assert.equal(enable_thinking, false);
+      assert.ok(messages[0].content.length + messages[1].content.length <= settings.MaxInputCharacters);
+      const data = JSON.parse(messages[1].content);
+      if (++calls === (direct ? 1 : 2)) {
+        smallerBudget = Math.floor((JSON.stringify(data.stagedDiff).length - 2) / 2);
+        return { ok: false, status: direct ? 504 : 408 };
+      }
+      if (data.stagedDiff) {
+        if (smallerBudget) assert.ok(JSON.stringify(data.stagedDiff).length - 2 <= smallerBudget);
+        successfulDiffs.push(data.stagedDiff);
+      }
+      if (data.commitRules) finalData = data;
+      return { ok: true, json: async () => ({ choices: [{ message: { content: '变更事实' } }], usage: { prompt_tokens: 12 } }) };
+    }, undefined, { progress: message => progress.push(message) });
+    assert.equal(result.fallbackReason, undefined);
+    assert.ok(progress.some(message => message.includes('超时') && message.includes('输入') && message.includes('耗时')));
+    assert.ok(successfulDiffs.length > 2);
+    const successfulLines = successfulDiffs.flatMap(diff => diff.match(/^\+marker-.*\n/gm) || []);
+    assert.deepEqual(successfulLines, lines);
+    assert.equal(finalData.commitRules, '项目规范');
+    assert.match(finalData.changeSummaries, /变更事实/);
+    assert.equal(result.requests, calls);
+    assert.equal(result.usage.prompt_tokens, null);
+  });
+}
+
+test('短请求按项目时限中止，重试成功后保留结果', async () => {
+  const settings = { BaseUrl: 'https://example.test/v1', Model: 'model', MaxInputCharacters: 8000, RequestTimeoutSeconds: 1 };
+  let attempts = 0;
+  const result = await generateMessage({ diff: '+change' }, '规则', settings, '', async (_url, { signal }) => {
+    if (++attempts === 1) return new Promise((_resolve, reject) =>
+      signal.addEventListener('abort', () => reject(signal.reason), { once: true }));
+    return { ok: true, json: async () => ({ choices: [{ message: { content: '完成' } }] }) };
+  });
+  assert.equal(result.requests, 2);
+  assert.equal(result.text, '完成');
+});
+
+for (const scenario of ['success', 'bad-id', 'final-error']) {
+  test('多文件事实归属、预算与运行日志 ' + scenario, async () => {
+    const files = Array.from({ length: 8 }, (_, i) => 'module' + i + '/index.js');
+    const diff = files.map(file => 'diff --git a/' + file + ' b/' + file + '\n+' + 'X'.repeat(400) + '\n').join('');
+    const settings = { BaseUrl: 'https://example.test/v1', Model: 'model', MaxInputCharacters: 2400 };
+    const logs = [];
+    let groups = 0;
+    let merges = 0;
+    let final;
+    const result = await generateMessage({ diff, files }, '项目规范', settings, 'secret-marker', async (_url, options) => {
+      const { messages } = JSON.parse(options.body);
+      const data = JSON.parse(messages[1].content);
+      assert.ok(messages[0].content.length + messages[1].content.length <= 2400);
+      let text = '单个文件事实';
+      if (data.changeSummaries && !data.commitRules) merges++;
+      if (data.commitRules) {
+        final = data.changeSummaries;
+        if (scenario === 'final-error') return { ok: false, status: 400 };
+      } else if (messages[0].content.includes('各输出一行')) {
+        groups++;
+        text = scenario === 'bad-id' ? '[F999] 无效编号' :
+          [...data.stagedDiff.matchAll(/^\[F\d+\]$/gm)].map(m => m[0] + ' 模块事实').join('\n');
+      }
+      return { ok: true, json: async () => ({ choices: [{ message: { content: text } }] }) };
+    }, undefined, { log: message => logs.push(message) });
+    assert.ok(groups > 0);
+    assert.equal(merges, 0);
+    for (const [i, file] of files.entries()) {
+      assert.ok(final.includes('[F' + (i + 1) + '] ' + file));
+    }
+    assert.doesNotMatch(final, /F999/);
+    if (scenario === 'final-error') assert.match(result.text, /部分摘要[\s\S]*模块事实/);
+    else assert.equal(result.fallbackReason, undefined);
+    const logText = logs.join('\n');
+    assert.match(logText, /请求 \d+ 次 超时 0 次/);
+    assert.doesNotMatch(logText, /secret-marker|diff --git|模块事实|项目规范/);
+    if (scenario === 'success') assert.ok(result.requests < files.length);
+  });
+}
+
+test('持续超时最多拆分两层，随后回退并显示失败批次', async () => {
+  const diff = '+sample line with sufficient text\n'.repeat(2000);
+  const settings = { BaseUrl: 'https://example.test/v1', Model: 'model', MaxInputCharacters: 8000 };
+  const result = await generateMessage({ diff, files: ['sample'] }, '项目规范', settings, '',
+    async () => ({ ok: false, status: 504 }));
+  assert.equal(result.requests, 3);
+  assert.match(result.fallbackReason, /汇总第 1\.1\.1 批变更.*模型请求超时.*HTTP 504/);
+  assert.match(result.text, /本地摘要/);
 });
 
 test('超过原 32 MiB 缓冲限制的真实暂存差异可以完整捕获', async () => {

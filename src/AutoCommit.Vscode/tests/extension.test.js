@@ -36,20 +36,23 @@ async function createRepository(t) {
   return root;
 }
 
-async function runGenerate(root, { answer, initialText = '' } = {}) {
-  const repo = { rootUri: { fsPath: root }, inputBox: { value: initialText } };
+async function runGenerate(root, { answer, initialText = '', command = 'autocommit.generate', multiRoot = false } = {}) {
+  const repo = { rootUri: { fsPath: root, scheme: 'file' }, inputBox: { value: initialText } };
+  const gitApi = { repositories: multiRoot ? [{}, repo] : [repo], getRepository: uri => uri === repo.rootUri ? repo : null };
   const commands = new Map();
   const warnings = [];
   const errors = [];
   const information = [];
   const requests = [];
+  const logs = [];
   const settings = { baseUrl: 'https://example.test/v1', model: 'test-model', allowHttp: false, maxInputCharacters: 48000 };
   const vscode = {
     ProgressLocation: { Notification: 1 },
-    extensions: { getExtension: () => ({ activate: async () => ({ getAPI: () => ({ repositories: [repo] }) }) }) },
+    extensions: { getExtension: () => ({ activate: async () => ({ getAPI: () => gitApi }) }) },
     workspace: { getConfiguration: () => ({ get: key => settings[key] }) },
     commands: { registerCommand: (name, run) => commands.set(name, run) },
     window: {
+      createOutputChannel: () => ({ info(message) { logs.push(message); }, show() { logs.push("已打开日志"); }, dispose() {} }),
       showWarningMessage: async (message, options, action) => {
         warnings.push({ message, modal: options?.modal, action });
         return answer?.(action);
@@ -70,10 +73,25 @@ async function runGenerate(root, { answer, initialText = '' } = {}) {
       return { ok: true, json: async () => ({ choices: [{ message: { content: 'fix: 测试说明' } }] }) };
     }
   }, { filename: extensionFile });
-  module.exports.activate({ extensionPath, subscriptions: [], secrets: { get: async () => '' } });
-  await commands.get('autocommit.generate')();
-  return { warnings, errors, information, requests, text: repo.inputBox.value };
+  module.exports.activate({ extension: { packageJSON: { version: "0.6.5" } }, extensionPath, subscriptions: [], secrets: { get: async () => '' } });
+  await commands.get(command)(multiRoot ? { rootUri: repo.rootUri } : undefined);
+  return { warnings, errors, information, requests, logs, text: repo.inputBox.value };
 }
+
+test('多仓库示例测试只发送固定差异，日志可独立打开', async t => {
+  const root = await createRepository(t);
+  await fs.writeFile(path.join(root, 'changed.txt'), 'private_marker');
+  git(root, 'add', 'changed.txt');
+  const result = await runGenerate(root, { command: 'autocommit.testGeneration', multiRoot: true, initialText: '已有说明' });
+  assert.deepEqual(result.errors, []);
+  assert.equal(result.text, '已有说明');
+  assert.equal(result.requests.length, 1);
+  assert.match(result.requests[0].stagedDiff, /const retries = 2/);
+  assert.doesNotMatch(result.requests[0].stagedDiff, /private_marker/);
+  const opened = await runGenerate(root, { command: 'autocommit.showLog' });
+  assert.ok(opened.logs.includes('已打开日志'));
+  assert.equal(opened.requests.length, 0);
+});
 
 test('确认后暂存全部变更并生成说明，忽略文件和 HEAD 保持原样', async t => {
   const root = await createRepository(t);
@@ -85,6 +103,8 @@ test('确认后暂存全部变更并生成说明，忽略文件和 HEAD 保持�
   const result = await runGenerate(root, { answer: action => action === stageAction ? action : undefined });
 
   assert.deepEqual(result.errors, []);
+  assert.match(result.logs.join('\n'), /生成后校验/);
+  assert.doesNotMatch(result.logs.join('\n'), /added_marker|changed_marker|测试说明/);
   assert.deepEqual(result.warnings.map(warning => warning.action), [stageAction]);
   assert.ok(result.warnings[0].modal);
   assert.equal(result.text, 'fix: 测试说明');

@@ -23,7 +23,7 @@ public static class ProjectConfiguration
         }
         WriteIfMissing(Path.Combine(Folder(root), ".gitignore"), "# Local secrets must not be shared\n*.local.*\n*.key\n*.dat\n");
         WriteIfMissing(Path.Combine(Folder(root), "README.md"),
-            "# AutoCommit 项目配置\n\n- model.json：模型地址、名称、HTTP 开关和输入字符预算，可通过插件设置保存。不要在此填写 API Key。\n" +
+            "# AutoCommit 项目配置\n\n- model.json：模型地址、名称、HTTP 开关和输入字符预算，可通过插件设置保存。支持思考开关的模型可在文件中设置 EnableThinking。API Key 只在本机保存。\n" +
             "- commit-rules.md：项目提交规范，可编辑并纳入版本控制。\n" +
             "- API Key：在插件设置中填写，按 Windows 用户加密保存在本机，不写入项目。\n" +
             "- 切换电脑或用户后需重新填写 Key；更换服务地址后也需重新填写。\n" +
