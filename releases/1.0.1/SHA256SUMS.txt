@@ -1,0 +1,3 @@
+8f14cd017b4c53df941a18fe850cead567dafc02d57226e540288693064c5dc9  AutoCommit-VS2019-1.0.1.vsix
+504fbee65eeda47f77ffee264aee2881a11bb70b7b05455130a1f720b86c38d6  AutoCommit-VS2022-1.0.1.vsix
+0b8b5cb8ecb7ef29cb211817a9bbdfa318ea350522f4b9f83387c6ad0d2488e6  AutoCommit-VSCode-1.0.1.vsix
