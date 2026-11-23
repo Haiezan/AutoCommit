@@ -57,7 +57,7 @@ Visual Studio 在找不到 Git 根目录时尝试 TFVC。先在 Team Explorer �
 | 模型设置 | Git 使用仓库根目录，TFVC 使用所选范围目录。`.auto/model.json` 可保存 `BaseUrl`、`Model`、`AllowHttp`、`MaxInputCharacters` 和可选的 `EnableThinking`。Visual Studio 找不到项目配置时使用本机默认设置，VS Code 用项目文件中的字段覆盖编辑器设置。 |
 | 提交规范 | 优先读取 `.auto/commit-rules.md`，找不到时使用扩展内置规范。Visual Studio 允许临时编辑本次生成规范。持久修改直接保存到项目文件。 |
 | 默认规范 | 标题概括整次提交的主要改动，涉及多个独立模块时在正文分条列出关键变化。这条规则也已同步到本仓库的 `.auto/commit-rules.md`。已有项目按自己的规则文件生成。 |
-| API Key | Visual Studio 用 Windows DPAPI 按当前用户加密，项目凭据按项目路径和模型地址隔离。VS Code 用 SecretStorage，并区分 Git 仓库和模型地址。 |
+| API Key | Visual Studio 用 Windows DPAPI 按当前用户加密，VS Code 用独立的 SecretStorage。各编辑器按服务地址共享，项目专用 Key 优先，也可显式选择不发送 Key。 |
 
 Visual Studio 读取变更时不创建 `.auto`。首次保存项目配置时按需初始化文件。如果已有旧版 `.commit-rules.md`，则优先将它用作新项目规则的初始内容。Visual Studio 和 VS Code 的本地凭据分别设置。
 

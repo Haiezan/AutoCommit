@@ -26,7 +26,7 @@ public static class ProjectConfiguration
             "# AutoCommit 项目配置\n\n- model.json：模型地址、名称、HTTP 开关和输入字符预算，可通过插件设置保存。支持思考开关的模型可在文件中设置 EnableThinking。API Key 只在本机保存。\n" +
             "- commit-rules.md：项目提交规范，可编辑并纳入版本控制。\n" +
             "- API Key：在插件设置中填写，按 Windows 用户加密保存在本机，不写入项目。\n" +
-            "- 切换电脑或用户后需重新填写 Key；更换服务地址后也需重新填写。\n" +
+            "- 切换电脑或用户后需重新填写 Key；同一服务地址默认使用本机共享 Key，也可设置项目专用 Key 或选择不发送 Key。\n" +
             "- 支持 Git 和 TFVC；TFVC 需在 Visual Studio 的 Team Explorer 中连接并映射工作区。\n");
     }
 

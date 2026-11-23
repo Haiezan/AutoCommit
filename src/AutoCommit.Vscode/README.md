@@ -4,7 +4,7 @@
 
 1. 如需只提交一部分改动，先在源代码管理视图暂存这部分内容。
 2. 在设置中填写 `AutoCommit: Base Url`、`AutoCommit: Model`；本机 HTTP 服务还需启用 `AutoCommit: Allow Http`。若仓库已有 `.auto/model.json`，请直接填写该文件中的 `Model` 等字段；项目文件优先于 VS Code 设置，包括 `Model` 为空时。
-3. 运行“AutoCommit: 设置当前仓库 API Key”（无认证服务可以留空），再运行“测试模型连接”。Key 由 VS Code 的 SecretStorage 保存，不写入项目。
+3. 运行“AutoCommit: 设置 API Key”，选择本机共享、项目专用或不发送 Key，再运行“测试模型连接”。Key 由 VS Code 的 SecretStorage 保存，不写入项目。
 4. 运行「AutoCommit: 生成提交说明」或点击源代码管理视图中的 AutoCommit 命令。已有暂存内容时直接生成。暂存区为空且有变更时，会询问是否暂存全部变更并生成。
 5. 如需单独验证生成，可运行「AutoCommit: 用示例变更测试生成」。该命令仅将固定示例差异发送给模型服务，不读取仓库内容；结果显示在通知中。
 

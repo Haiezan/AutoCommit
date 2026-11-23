@@ -4,12 +4,13 @@ const vscode = require('vscode');
 const fs = require('node:fs/promises');
 const os = require('node:os');
 const path = require('node:path');
-const { createHash } = require('node:crypto');
+const { credentialIds, readCredential, saveCredential } = require('./lib/credentials');
 const { readGitSnapshot, sameSnapshot, hasChangesToStage, stageAllChanges, readProjectConfiguration,
   needsBatching, generateMessage, testConnection, serviceUrl } = require('./lib/core');
 
-async function chooseRepository(sourceControl) {
+async function chooseRepository(sourceControl, allowNoRepository = false) {
   const extension = vscode.extensions.getExtension('vscode.git');
+  if (!extension && allowNoRepository) return null;
   if (!extension) throw new Error('未找到 VS Code 内置 Git 扩展。');
   const git = (await extension.activate()).getAPI(1);
   const root = sourceControl?.rootUri;
@@ -21,6 +22,7 @@ async function chooseRepository(sourceControl) {
   if (!git.repositories.length && vscode.workspace.workspaceFolders?.length === 1)
     await git.openRepository(vscode.workspace.workspaceFolders[0].uri);
   const repos = git.repositories;
+  if (!repos.length && allowNoRepository) return null;
   if (!repos.length) throw new Error('未发现 Git 仓库，请先在 VS Code 中打开仓库。');
   if (repos.length === 1) return repos[0];
   const picked = await vscode.window.showQuickPick(repos.map(repo => ({
@@ -32,7 +34,7 @@ async function chooseRepository(sourceControl) {
 }
 
 function defaultsFor(repo) {
-  const config = vscode.workspace.getConfiguration('autocommit', repo.rootUri);
+  const config = vscode.workspace.getConfiguration('autocommit', repo?.rootUri);
   return {
     BaseUrl: config.get('baseUrl'), Model: config.get('model'),
     AllowHttp: config.get('allowHttp'), MaxInputCharacters: config.get('maxInputCharacters')
@@ -44,11 +46,9 @@ async function configurationFor(repo, context) {
   return readProjectConfiguration(repo.rootUri.fsPath, defaultsFor(repo), defaultRules);
 }
 
-function secretKey(repo, settings) {
-  const root = path.resolve(repo.rootUri.fsPath);
-  const identity = (process.platform === 'win32' ? root.toUpperCase() : root) + '\n' +
-    String(settings.BaseUrl || '').trim().replace(/\/+$/, '');
-  return 'api-key:' + createHash('sha256').update(identity).digest('hex');
+async function requestKey(context, repo, settings) {
+  const ids = credentialIds(repo.rootUri.fsPath, settings.BaseUrl);
+  return (await readCredential(context.secrets, ids)).value;
 }
 
 async function showError(error) {
@@ -60,20 +60,35 @@ async function showError(error) {
   vscode.window.showErrorMessage('AutoCommit：' + message);
 }
 
-async function setApiKey(context) {
-  const repo = await chooseRepository();
-  if (!repo) return;
-  const { settings } = await configurationFor(repo, context);
+async function setApiKey(context, _log, sourceControl) {
+  const repo = await chooseRepository(sourceControl, true);
+  if (repo === undefined) return;
+  const settings = repo ? (await configurationFor(repo, context)).settings : defaultsFor(null);
   serviceUrl(settings);
-  const value = await vscode.window.showInputBox({
-    prompt: '当前仓库和服务地址的 API Key；留空并确认可删除已保存的 Key',
-    password: true, ignoreFocusOut: true
+  const ids = credentialIds(repo?.rootUri.fsPath, settings.BaseUrl);
+  const labels = { shared: '本机共享', project: '项目专用', anonymous: '此项目不发送 Key' };
+  let source;
+  try { source = labels[(await readCredential(context.secrets, ids)).scope]; }
+  catch { source = '凭据无法读取，请重新设置'; }
+  const choices = [{ label: '保存本机共享 Key', action: 'shared' }];
+  if (repo) choices.push({ label: '保存项目专用 Key', action: 'project' },
+    { label: '恢复使用共享 Key', action: 'inherit' }, { label: labels.anonymous, action: 'anonymous' });
+  choices.push({ label: '删除此地址的共享 Key', action: 'removeShared' });
+  const choice = await vscode.window.showQuickPick(choices, {
+    placeHolder: settings.BaseUrl + ' · 当前凭据方式：' + source
   });
-  if (value === undefined) return;
-  const key = secretKey(repo, settings);
-  if (value) await context.secrets.store(key, value);
-  else await context.secrets.delete(key);
-  vscode.window.showInformationMessage(value ? 'API Key 已保存在 VS Code 凭据存储中。' : '已删除当前仓库的 API Key。');
+  if (!choice) return;
+  if (choice.action === 'removeShared' && await vscode.window.showWarningMessage(
+    '删除后，使用此地址共享 Key 的仓库需要重新配置。', { modal: true }, '删除共享 Key') !== '删除共享 Key') return;
+  let value;
+  if (choice.action === 'shared' || choice.action === 'project') {
+    value = await vscode.window.showInputBox({ password: true, ignoreFocusOut: true,
+      prompt: choice.label + ' · ' + settings.BaseUrl,
+      validateInput: input => input.trim() ? undefined : '请输入 API Key。' });
+    if (!value) return;
+  }
+  await saveCredential(context.secrets, ids, choice.action, value);
+  vscode.window.showInformationMessage('API Key 设置已更新：' + choice.label);
 }
 
 async function testModel(context, log, sourceControl) {
@@ -81,7 +96,7 @@ async function testModel(context, log, sourceControl) {
   if (!repo) return;
   const { settings, modelSource } = await configurationFor(repo, context);
   if (!String(settings.Model || '').trim()) throw new Error(`请在 ${modelSource} 中填写模型名称。`);
-  const apiKey = await context.secrets.get(secretKey(repo, settings)) || '';
+  const apiKey = await requestKey(context, repo, settings);
   const result = await vscode.window.withProgress({
     location: vscode.ProgressLocation.Notification,
     title: 'AutoCommit 正在测试模型连接（仅发送固定文本）', cancellable: true
@@ -123,7 +138,7 @@ async function generate(context, log, sourceControl) {
       '暂存全部并生成');
     if (answer !== '暂存全部并生成') return;
   }
-  const apiKey = await context.secrets.get(secretKey(repo, settings)) || '';
+  const apiKey = await requestKey(context, repo, settings);
   const result = await vscode.window.withProgress({
     location: vscode.ProgressLocation.Notification,
     title: 'AutoCommit 正在生成提交说明', cancellable: true
@@ -185,7 +200,7 @@ async function testGeneration(context, log, sourceControl) {
   if (!repo) return;
   const { settings } = await configurationFor(repo, context);
   serviceUrl(settings);
-  const apiKey = await context.secrets.get(secretKey(repo, settings)) || '';
+  const apiKey = await requestKey(context, repo, settings);
   const sample = { files: ['sample.js'], operations: ['修改'],
     diff: 'diff --git a/sample.js b/sample.js\n--- a/sample.js\n+++ b/sample.js\n@@ -1 +1 @@\n-const retries = 1;\n+const retries = 2;\n' };
   const result = await vscode.window.withProgress({

@@ -36,7 +36,7 @@ async function createRepository(t) {
   return root;
 }
 
-async function runGenerate(root, { answer, initialText = '', command = 'autocommit.generate', multiRoot = false } = {}) {
+async function runGenerate(root, { answer, initialText = '', secrets = { get: async () => undefined }, pick, input, command = 'autocommit.generate', multiRoot = false } = {}) {
   const repo = { rootUri: { fsPath: root, scheme: 'file' }, inputBox: { value: initialText } };
   const gitApi = { repositories: multiRoot ? [{}, repo] : [repo], getRepository: uri => uri === repo.rootUri ? repo : null };
   const commands = new Map();
@@ -44,6 +44,7 @@ async function runGenerate(root, { answer, initialText = '', command = 'autocomm
   const errors = [];
   const information = [];
   const requests = [];
+  const authorization = [];
   const logs = [];
   const settings = { baseUrl: 'https://example.test/v1', model: 'test-model', allowHttp: false, maxInputCharacters: 48000 };
   const vscode = {
@@ -53,6 +54,8 @@ async function runGenerate(root, { answer, initialText = '', command = 'autocomm
     commands: { registerCommand: (name, run) => commands.set(name, run) },
     window: {
       createOutputChannel: () => ({ info(message) { logs.push(message); }, show() { logs.push("已打开日志"); }, dispose() {} }),
+      showQuickPick: async choices => choices.find(choice => choice.action === pick),
+      showInputBox: async () => input,
       showWarningMessage: async (message, options, action) => {
         warnings.push({ message, modal: options?.modal, action });
         return answer?.(action);
@@ -69,13 +72,14 @@ async function runGenerate(root, { answer, initialText = '', command = 'autocomm
     module, process, AbortController,
     require: id => id === 'vscode' ? vscode : loadFromExtension(id),
     fetch: async (_url, options) => {
+      authorization.push(options.headers.Authorization);
       requests.push(JSON.parse(JSON.parse(options.body).messages[1].content));
       return { ok: true, json: async () => ({ choices: [{ message: { content: 'fix: 测试说明' } }] }) };
     }
   }, { filename: extensionFile });
-  module.exports.activate({ extension: { packageJSON: { version: "0.6.5" } }, extensionPath, subscriptions: [], secrets: { get: async () => '' } });
+  module.exports.activate({ extension: { packageJSON: { version: "0.6.5" } }, extensionPath, subscriptions: [], secrets });
   await commands.get(command)(multiRoot ? { rootUri: repo.rootUri } : undefined);
-  return { warnings, errors, information, requests, logs, text: repo.inputBox.value };
+  return { warnings, errors, information, requests, authorization, logs, text: repo.inputBox.value };
 }
 
 test('多仓库示例测试只发送固定差异，日志可独立打开', async t => {
@@ -165,4 +169,51 @@ test('确认期间出现暂存项时保留用户的暂存范围', async t => {
   assert.match(result.errors[0], /Git 状态发生变化/);
   assert.equal(result.requests.length, 0);
   assert.equal(git(root, 'diff', '--cached', '--name-only'), 'changed.txt');
+});
+
+test('通过命令保存共享凭据、覆盖、停用认证和恢复共享', async t => {
+  const first = await createRepository(t);
+  const second = await createRepository(t);
+  const data = new Map();
+  const secrets = { get: id => data.get(id), store: (id, value) => data.set(id, value), delete: id => data.delete(id) };
+  const configure = async (root, pick, input) => {
+    const result = await runGenerate(root, { secrets, command: 'autocommit.setApiKey', pick, input });
+    assert.deepEqual(result.errors, []);
+  };
+  const header = async root => {
+    const result = await runGenerate(root, { secrets, command: 'autocommit.testGeneration' });
+    assert.deepEqual(result.errors, []);
+    assert.equal(result.requests.length, 1);
+    return result.authorization[0];
+  };
+  await configure(first, 'shared', 'test-shared');
+  assert.equal(await header(second), 'Bearer test-shared');
+  await configure(second, 'project', 'test-project');
+  assert.equal(await header(first), 'Bearer test-shared');
+  assert.equal(await header(second), 'Bearer test-project');
+  await configure(second, 'anonymous');
+  assert.equal(await header(second), undefined);
+  await configure(second, 'inherit');
+  assert.equal(await header(second), 'Bearer test-shared');
+  await fs.mkdir(path.join(second, '.auto'));
+  await fs.writeFile(path.join(second, '.auto', 'model.json'), JSON.stringify({ BaseUrl: 'https://example.test/other', Model: 'test' }));
+  assert.equal(await header(second), undefined);
+});
+
+test('旧版仓库 Key 优先，损坏的项目记录不会回退到共享账号', async () => {
+  const { credentialIds, readCredential, saveCredential } = require('../lib/credentials');
+  const { createHash } = require('node:crypto');
+  const root = path.resolve('legacy-project');
+  const address = 'https://example.test/v1';
+  const ids = credentialIds(root, address + '/');
+  const directory = process.platform === 'win32' ? root.toUpperCase() : root;
+  const legacy = 'api-key:' + createHash('sha256').update(directory + '\n' + address).digest('hex');
+  const data = new Map([[legacy, 'old-project'], [ids.shared, 'shared-test']]);
+  const secrets = { get: id => data.get(id), store: (id, value) => data.set(id, value), delete: id => data.delete(id) };
+  assert.deepEqual(await readCredential(secrets, ids), { scope: 'project', value: 'old-project' });
+  data.set(ids.project, 'invalid-record');
+  await assert.rejects(readCredential(secrets, ids), /项目凭据无法读取/);
+  await saveCredential(secrets, ids, 'inherit');
+  assert.deepEqual(await readCredential(secrets, ids), { scope: 'shared', value: 'shared-test' });
+  assert.equal(data.has(legacy), false);
 });

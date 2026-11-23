@@ -15,6 +15,12 @@ using ThreadHelper = Microsoft.VisualStudio.Shell.ThreadHelper;
 
 namespace AutoCommit.Vsix;
 
+internal sealed class TfvcSelectionException : InvalidOperationException
+{
+    internal TfvcSelectionException(string stage, Exception? cause = null)
+        : base($"无法读取 TFVC 包含项（{stage}：{cause?.GetBaseException().GetType().Name ?? "接口数据不可用"}）。请在 Team Explorer 打开“挂起的更改”，等待清单加载后重试。", cause) { }
+}
+
 internal sealed class TfvcProvider
 {
     private const string SelectionChanged = "Team Explorer 的包含项或挂起更改已变化，请重新读取并生成。";
@@ -26,28 +32,31 @@ internal sealed class TfvcProvider
         var root = Path.GetFullPath(directory);
         var selection = await GetSelectionAsync(root, token).ConfigureAwait(false);
         var snapshot = await Task.Run(() => Read(root, selection.Workspace,
-            GetCurrentChanges(selection.Workspace, selection.Changes), token, includeDiff, capture), token).ConfigureAwait(false);
+            GetCurrentChanges(selection.Workspace, selection.Changes), selection.IncludedCount, token, includeDiff, capture), token).ConfigureAwait(false);
         await EnsureSelectionUnchangedAsync(root, selection.Workspace, selection.Changes, token).ConfigureAwait(false);
         return snapshot;
     }
 
-    private static async Task<(Workspace Workspace, PendingChange[] Changes)> GetSelectionAsync(string root, CancellationToken token)
+    private static async Task<(Workspace Workspace, PendingChange[] Changes, int IncludedCount)> GetSelectionAsync(string root, CancellationToken token)
     {
         await ThreadHelper.JoinableTaskFactory.SwitchToMainThreadAsync(token);
-        const string openPendingChanges = "无法读取 TFVC 包含项。请在 Team Explorer 打开“挂起的更改”，等待清单加载后重试。";
-        var dte = ServiceProvider.GlobalProvider.GetService(typeof(DTE)) as DTE;
-        Workspace? workspace;
-        PendingChange[]? included;
+        Workspace workspace;
+        PendingChange[] included;
+        var stage = "DTE";
         try {
-            // Use the Team Explorer automation object supplied by the running VS instance.
-            var versionControl = dte?.GetObject("Microsoft.VisualStudio.TeamFoundation.VersionControl.VersionControlExt");
-            var pendingChanges = GetAutomationProperty(versionControl, "PendingChanges");
-            workspace = GetAutomationProperty(pendingChanges, "Workspace") as Workspace;
-            included = (GetAutomationProperty(pendingChanges, "IncludedChanges") as PendingChange[])?.ToArray();
+            var dte = ServiceProvider.GlobalProvider.GetService(typeof(DTE)) as DTE ?? throw new TfvcSelectionException(stage);
+            stage = "VersionControlExt";
+            var versionControl = dte.GetObject("Microsoft.VisualStudio.TeamFoundation.VersionControl.VersionControlExt")
+                ?? throw new TfvcSelectionException(stage);
+            stage = "PendingChanges";
+            var pendingChanges = GetAutomationProperty(versionControl, stage) ?? throw new TfvcSelectionException(stage);
+            stage = "Workspace";
+            workspace = GetAutomationProperty(pendingChanges, stage) as Workspace ?? throw new TfvcSelectionException(stage);
+            stage = "IncludedChanges";
+            included = (GetAutomationProperty(pendingChanges, stage) as PendingChange[])?.ToArray() ?? throw new TfvcSelectionException(stage);
         } catch (Exception ex) when (ex is COMException || ex is MissingMethodException || ex is TargetInvocationException) {
-            throw new InvalidOperationException(openPendingChanges, ex);
+            throw new TfvcSelectionException(stage, ex);
         }
-        if (workspace == null || included == null) throw new InvalidOperationException(openPendingChanges);
 
         return await Task.Run(() => {
             if (!workspace.IsLocalPathMapped(root))
@@ -62,7 +71,7 @@ internal sealed class TfvcProvider
                 return fullPath.Equals(directory, StringComparison.OrdinalIgnoreCase) ||
                     fullPath.StartsWith(prefix, StringComparison.OrdinalIgnoreCase);
             }).OrderBy(ChangeIdentity, StringComparer.Ordinal).ToArray();
-            return (workspace, changes);
+            return (workspace, changes, included.Length);
         }, token).ConfigureAwait(false);
     }
 
@@ -92,7 +101,7 @@ internal sealed class TfvcProvider
             throw new InvalidOperationException(SelectionChanged)).ToArray();
     }
 
-    private static ChangeSnapshot Read(string root, Workspace workspace, PendingChange[] changes, CancellationToken token,
+    private static ChangeSnapshot Read(string root, Workspace workspace, PendingChange[] changes, int includedCount, CancellationToken token,
         bool includeDiff, TextWriter? capture = null)
     {
         var files = changes.Select(change => new ChangeFile(change.ServerItem, change.ChangeType.ToString())).ToArray();
@@ -125,7 +134,8 @@ internal sealed class TfvcProvider
             }
         }
         return new ChangeSnapshot(root, "", identity.ToString(), "TFVC / " + workspace.Name,
-            changes.Length + " 项 Team Explorer 包含的更改；范围：" + root + "（递归）", files, diff);
+            $"当前目录 {changes.Length} 项，Team Explorer 共包含 {includedCount} 项。范围：{root}（递归）" +
+            (changes.Length < includedCount ? "。可在“切换仓库 / 手工指定”中选择更大的映射目录。" : ""), files, diff);
     }
 
     public async Task<string> CommitAsync(ChangeSnapshot expected, string message, CancellationToken token)
@@ -135,7 +145,7 @@ internal sealed class TfvcProvider
         var workspace = selection.Workspace;
         var pending = await Task.Run(() => {
             var changes = GetCurrentChanges(workspace, selection.Changes);
-            var current = Read(expected.Root, workspace, changes, token, includeDiff: false);
+            var current = Read(expected.Root, workspace, changes, selection.IncludedCount, token, includeDiff: false);
             if (current.Fingerprint != expected.Fingerprint || changes.Length == 0)
                 throw new InvalidOperationException(SelectionChanged);
             var evaluation = workspace.EvaluateCheckin(CheckinEvaluationOptions.All, changes, changes, message, null, null);

@@ -39,7 +39,7 @@
       },
       {
         "command": "autocommit.setApiKey",
-        "title": "AutoCommit: 设置当前仓库 API Key"
+        "title": "AutoCommit: 设置 API Key"
       }
     ],
     "menus": {

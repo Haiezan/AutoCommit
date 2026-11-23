@@ -1,6 +1,7 @@
 using System;
 using System.IO;
 using System.Net.Http;
+using System.Security.Cryptography;
 using System.Text;
 using System.Threading;
 using Task = System.Threading.Tasks.Task;
@@ -21,6 +22,12 @@ internal sealed class CommitControl : UserControl
     private readonly TextBox endpoint = new TextBox();
     private readonly TextBox model = new TextBox();
     private readonly PasswordBox key = new PasswordBox();
+    private readonly TextBlock credentialStatus = new TextBlock { TextWrapping = TextWrapping.Wrap };
+    private readonly WrapPanel credentialActions = new WrapPanel();
+    private bool editingKey, loadingKey, keyUnavailable;
+    private readonly Button saveProjectKey = new Button { Content = "保存项目专用 Key" };
+    private readonly Button useShared = new Button { Content = "恢复使用共享 Key" };
+    private readonly Button anonymous = new Button { Content = "此项目不发送 Key" };
     private readonly CheckBox allowHttp = new CheckBox { Content = "允许本机 / 内网 HTTP（明文传输）" };
     private readonly TextBox rules = Editor(100);
     private readonly TextBox diff = Editor(150);
@@ -92,7 +99,14 @@ internal sealed class CommitControl : UserControl
         endpoint.ToolTip = "例如 http://localhost:11434/v1；不要包含 /chat/completions";
         Add(settingsPanel, "模型名称", model);
         Add(settingsPanel, "API Key", key);
-        key.ToolTip = "Key 按项目与服务地址隔离，在本机加密保存；无认证的本地服务可留空。";
+        settingsPanel.Children.Add(credentialStatus);
+        var saveShared = new Button { Content = "保存本机共享 Key" };
+        foreach (var button in new[] { saveShared, saveProjectKey, useShared, anonymous }) credentialActions.Children.Add(button);
+        settingsPanel.Children.Add(credentialActions);
+        saveShared.Click += (s, e) => SaveCredential(KeyScope.Shared);
+        saveProjectKey.Click += (s, e) => SaveCredential(KeyScope.Project);
+        anonymous.Click += (s, e) => SaveCredential(KeyScope.Anonymous);
+        useShared.Click += (s, e) => SaveCredential(null);
         settingsPanel.Children.Add(allowHttp);
         var openLog = new Button { Content = "查看运行日志" };
         openLog.Click += (sender, args) => {
@@ -107,7 +121,7 @@ internal sealed class CommitControl : UserControl
         settingsPanel.Children.Add(new TextBlock { Text = "测试连接仅发送固定测试文本，可能产生少量调用费用。", TextWrapping = TextWrapping.Wrap });
         settingsSection.Content = settingsPanel; panel.Children.Add(settingsSection);
         settingsPanel.Children.Add(validation); settingsPanel.Children.Add(testUsage);
-        settingsPanel.Children.Add(new TextBlock { Text = "项目配置：.auto/model.json；规范：.auto/commit-rules.md。Key 仅在本机保存。更换地址后需重新填写 Key。", TextWrapping = TextWrapping.Wrap });
+        settingsPanel.Children.Add(new TextBlock { Text = "项目配置：.auto/model.json；规范：.auto/commit-rules.md。Key 仅在本机保存。Key 按服务地址选择。", TextWrapping = TextWrapping.Wrap });
 
         var repositoryPanel = new StackPanel { Margin = new Thickness(8) };
         var repositoryTools = new WrapPanel(); repositoryTools.Children.Add(refresh); repositoryTools.Children.Add(detect); repositoryPanel.Children.Add(repositoryTools);
@@ -150,14 +164,19 @@ internal sealed class CommitControl : UserControl
             button.Padding = new Thickness(12, 6, 12, 6); button.Margin = new Thickness(0, 3, 8, 3);
         }
         result.TextChanged += (s, e) => { if (!updatingResult) draft.Edit(result.Text); UpdateActions(); };
-        directory.TextChanged += (s, e) => { snapshot = null; projectRoot = ""; loadedModelJson = ""; key.Clear(); diff.Clear(); files.Clear(); directory.ToolTip = directory.Text; summary.Text = "目录已变更，请重新读取；已有说明已保留。"; InvalidateModelState(); UpdateActions(); };
+        directory.TextChanged += (s, e) => { snapshot = null; projectRoot = ""; loadedModelJson = ""; LoadCredential(); diff.Clear(); files.Clear(); directory.ToolTip = directory.Text; summary.Text = "目录已变更，请重新读取；已有说明已保留。"; InvalidateModelState(); UpdateActions(); };
         rules.TextChanged += (s, e) => {
             if (rules.Text != loadedRuleText) status.Text = "规范已修改，仅影响后续生成；当前提交说明未改变。";
             if (snapshot != null) UpdateDiffPreview();
         };
-        endpoint.TextChanged += (s, e) => { key.Clear(); ValidateSettings(); InvalidateModelState(); };
+        endpoint.TextChanged += (s, e) => { if (!loadingSettings) LoadCredential(); ValidateSettings(); InvalidateModelState(); };
         model.TextChanged += (s, e) => { ValidateSettings(); InvalidateModelState(); };
-        key.PasswordChanged += (s, e) => InvalidateModelState();
+        key.PasswordChanged += (s, e) => {
+            if (loadingKey) return;
+            editingKey = true;
+            credentialStatus.Text = "正在使用本次输入的 Key，选择保存范围后可在下次使用。";
+            modelStatus.Text = "模型：当前设置尚未测试";
+        };
         allowHttp.Checked += (s, e) => InvalidateModelState();
         allowHttp.Unchecked += (s, e) => InvalidateModelState();
         undo.Click += (s, e) => {
@@ -168,7 +187,7 @@ internal sealed class CommitControl : UserControl
         test.Click += async (s, e) => await RunAsync("测试连接", async (token, run) => {
             modelStatus.Text = "正在验证模型连接…";
             testUsage.Text = "连接测试：正在等待服务端用量…";
-            var response = await new CommitGenerator(Client).TestConnectionAsync(CurrentSettings(), key.Password, token);
+            var response = await new CommitGenerator(Client).TestConnectionAsync(CurrentSettings(), RequestKey(), token);
             testUsage.Text = "连接测试成功 · " + response.Seconds.ToString("F1") + " 秒 · 输入 " + TokenValue(response.InputTokens) + " / 输出 " + TokenValue(response.OutputTokens) + " Token";
             modelStatus.Text = "连接成功：当前地址、认证及模型可正常调用。可保存配置。";
         }, modelStatus, operationTimeout: false);
@@ -180,7 +199,7 @@ internal sealed class CommitControl : UserControl
             }
             SaveConfiguration(CurrentSettings()); settingsSection.IsExpanded = false;
             settingsSaved = true; UpdateConfigurationStatus();
-            status.Text = string.IsNullOrEmpty(projectRoot) ? "尚未识别仓库，已保存为全局默认配置。" : "已保存到 .auto/model.json；API Key 已在本机加密保存。";
+            status.Text = string.IsNullOrEmpty(projectRoot) ? "尚未识别仓库，已保存为全局默认配置。" : "模型设置已保存到 .auto/model.json。";
             return Task.CompletedTask;
         });
         detect.Click += async (s, e) => await RunAsync("识别项目", async (token, run) => {
@@ -194,7 +213,7 @@ internal sealed class CommitControl : UserControl
             var selected = snapshot ?? throw new InvalidOperationException("请先读取变更。");
             var settings = CurrentSettings();
             var currentRules = rules.Text;
-            var apiKey = key.Password;
+            var apiKey = RequestKey();
             if (!string.IsNullOrWhiteSpace(result.Text) && !Confirm("重新生成提交说明？",
                 (draft.Edited ? "当前说明包含手动修改。" : "当前已有提交说明。") + "新结果生成成功后将替换当前内容；失败或取消会保留原内容。", "重新生成")) {
                 status.Text = "已取消重新生成，原内容已保留。"; return;
@@ -285,7 +304,10 @@ internal sealed class CommitControl : UserControl
             endpoint.Text = settings.BaseUrl; model.Text = settings.Model; allowHttp.IsChecked = settings.AllowHttp;
             requestTimeoutSeconds = settings.RequestTimeoutSeconds;
             inputBudget = settings.MaxInputCharacters; enableThinking = settings.EnableThinking;
-            key.Password = SettingsStore.LoadKey(); settingsSection.IsExpanded = string.IsNullOrWhiteSpace(settings.Model);
+            var legacyUnbound = SettingsStore.MigrateLegacyKey();
+            LoadCredential();
+            if (legacyUnbound) status.Text = "旧本机 Key 缺少原服务地址，已备份。请为当前地址重新保存共享 Key。";
+            settingsSection.IsExpanded = legacyUnbound || keyUnavailable || string.IsNullOrWhiteSpace(settings.Model);
             settingsSaved = SettingsStore.HasGlobalSettings; UpdateConfigurationStatus();
         }
         catch { status.Text = "无法加载本地设置，请重新填写。"; }
@@ -309,12 +331,13 @@ internal sealed class CommitControl : UserControl
                 allowHttp.IsChecked = projectSettings.AllowHttp; inputBudget = projectSettings.MaxInputCharacters;
                 enableThinking = projectSettings.EnableThinking;
                 requestTimeoutSeconds = projectSettings.RequestTimeoutSeconds;
-                key.Password = modelJson.Length == 0 ? "" : SettingsStore.LoadProjectKey(current.Root, projectSettings.BaseUrl);
+                projectRoot = current.Root; loadedModelJson = modelJson;
+                LoadCredential(readLog);
             } finally { loadingSettings = false; }
-            projectRoot = current.Root; loadedModelJson = modelJson;
             settingsSaved = modelJson.Length != 0;
-            modelStatus.Text = "模型：当前设置尚未测试"; UpdateConfigurationStatus();
-            settingsSection.IsExpanded = string.IsNullOrWhiteSpace(projectSettings.Model);
+            modelStatus.Text = "模型：当前设置尚未测试";
+            UpdateConfigurationStatus();
+            settingsSection.IsExpanded = keyUnavailable || string.IsNullOrWhiteSpace(projectSettings.Model);
         }
         var path = ProjectConfiguration.RulesPath(current.Root);
         if (File.Exists(path) && new FileInfo(path).Length > 65536) throw new InvalidOperationException("规范文件超过 64KB。");
@@ -487,12 +510,57 @@ internal sealed class CommitControl : UserControl
         return dialog.ShowDialog() == true;
     }
 
+    private void LoadCredential(RunLog? log = null)
+    {
+        var scope = KeyScope.Shared;
+        loadingKey = true;
+        try {
+            editingKey = false;
+            keyUnavailable = false;
+            key.Clear();
+            saveProjectKey.IsEnabled = useShared.IsEnabled = anonymous.IsEnabled = projectRoot.Length != 0;
+            key.Password = SettingsStore.Credentials.Load(projectRoot, endpoint.Text, out scope);
+            credentialStatus.Text = scope == KeyScope.Anonymous ? "此项目不发送 Key" :
+                scope == KeyScope.Project ? "正在使用项目专用 Key" :
+                key.Password.Length == 0 ? "此服务地址尚未配置共享 Key" : "正在使用本机共享 Key";
+        } catch (Exception ex) when (ex is CryptographicException || ex is IOException || ex is UnauthorizedAccessException) {
+            keyUnavailable = true;
+            credentialStatus.Text = (scope == KeyScope.Project ? "项目专用" : "本机共享") +
+                " Key 无法读取，请重新填写并保存，或选择其他凭据方式。";
+            log?.Write("凭据读取失败 " + scope + " " + ex.GetType().Name);
+        } finally { loadingKey = false; }
+    }
+
+    private string RequestKey()
+    {
+        if (!editingKey) LoadCredential();
+        if (!editingKey && keyUnavailable) throw new InvalidOperationException(credentialStatus.Text);
+        return key.Password;
+    }
+
+    private void SaveCredential(KeyScope? scope)
+    {
+        if (!Uri.TryCreate(endpoint.Text.Trim(), UriKind.Absolute, out var uri) ||
+            (uri.Scheme != "https" && uri.Scheme != "http")) { credentialStatus.Text = "请先填写有效的服务地址。"; return; }
+        try {
+            if ((scope == KeyScope.Project || scope == KeyScope.Shared) && string.IsNullOrEmpty(key.Password)) {
+                credentialStatus.Text = "请先填写要保存的 Key。"; return;
+            }
+            if (scope.HasValue) SettingsStore.Credentials.Save(projectRoot, endpoint.Text, scope.Value, key.Password);
+            if (scope == null || scope == KeyScope.Shared) SettingsStore.Credentials.UseShared(projectRoot, endpoint.Text);
+            LoadCredential();
+            modelStatus.Text = "模型：当前设置尚未测试";
+        } catch (Exception ex) when (ex is CryptographicException || ex is IOException || ex is UnauthorizedAccessException) {
+            credentialStatus.Text = "保存凭据失败，请重试。" + ex.GetType().Name;
+        }
+    }
+
     private void SaveConfiguration(ModelSettings settings)
     {
-        if (string.IsNullOrEmpty(projectRoot)) SettingsStore.Save(settings, key.Password);
+        if (string.IsNullOrEmpty(projectRoot)) SettingsStore.Save(settings);
         else {
             ProjectConfiguration.Initialize(projectRoot, SettingsStore.Load());
-            SettingsStore.SaveProject(projectRoot, settings, key.Password);
+            ProjectConfiguration.Save(projectRoot, settings);
             loadedModelJson = File.ReadAllText(ProjectConfiguration.ModelPath(projectRoot));
         }
     }
@@ -513,7 +581,7 @@ internal sealed class CommitControl : UserControl
         cancellation = operationTimeout ? new CancellationTokenSource(TimeSpan.FromMinutes(3)) : new CancellationTokenSource();
         refresh.IsEnabled = generate.IsEnabled = copy.IsEnabled = commit.IsEnabled = detect.IsEnabled = manual.IsEnabled = test.IsEnabled = save.IsEnabled = false;
         cancel.IsEnabled = true; progress.Visibility = Visibility.Visible; progress.IsIndeterminate = true;
-        directory.IsEnabled = endpoint.IsEnabled = model.IsEnabled = key.IsEnabled = allowHttp.IsEnabled = rules.IsEnabled = false;
+        credentialActions.IsEnabled = directory.IsEnabled = endpoint.IsEnabled = model.IsEnabled = key.IsEnabled = allowHttp.IsEnabled = rules.IsEnabled = false;
         result.IsReadOnly = true; undo.IsEnabled = false;
         if (operationStatus != null) operationStatus.Text = "处理中…";
         status.Text = "处理中…";
@@ -526,6 +594,7 @@ internal sealed class CommitControl : UserControl
                 "操作已取消或超时；若已发送请求，服务端仍可能计费用量。";
         }
         catch (HttpRequestException) { run.Write("连接失败"); status.Text = "连接失败，已有说明已保留。请检查服务地址、代理、防火墙及证书。"; }
+        catch (TfvcSelectionException ex) { run.Write(ex.Message); status.Text = "操作失败，已有说明已保留。\n" + ex.Message; }
         catch (Exception ex) { run.Write("操作失败 " + ex.GetType().Name); status.Text = "操作失败，已有说明已保留。\n" + ex.Message; }
         finally {
             run.Write("结束 " + operation);
@@ -534,7 +603,7 @@ internal sealed class CommitControl : UserControl
             cancel.Content = "取消";
             if (testUsage.Text.Contains("正在等待")) testUsage.Text = "连接测试未获得用量；请求仍可能产生费用。";
             cancellation.Dispose(); cancellation = null;
-            directory.IsEnabled = endpoint.IsEnabled = model.IsEnabled = key.IsEnabled = allowHttp.IsEnabled = rules.IsEnabled = true;
+            credentialActions.IsEnabled = directory.IsEnabled = endpoint.IsEnabled = model.IsEnabled = key.IsEnabled = allowHttp.IsEnabled = rules.IsEnabled = true;
             cancel.IsEnabled = false; progress.Visibility = Visibility.Collapsed; progress.IsIndeterminate = false;
             refresh.IsEnabled = detect.IsEnabled = manual.IsEnabled = test.IsEnabled = save.IsEnabled = true; result.IsReadOnly = false; UpdateActions();
         }

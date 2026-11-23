@@ -65,7 +65,7 @@ VS2019 新增 TFVC 工作区支持，使用 VS 安装的 Team Explorer 客户端
 - `.auto/model.json`：BaseUrl、Model、AllowHttp、MaxInputCharacters，可纳入版本控制。对支持的模型可用 `EnableThinking` 显式开启或关闭思考。API Key 只在本机保存。
 - `.auto/commit-rules.md`：项目提交规范，可编辑并共享。第一次创建时优先复制原 `.commit-rules.md`，否则使用完整内置规范；之后以 `.auto` 为准，不覆盖已有文件。
 - `.auto/.gitignore`：排除常见本地凭据文件名，仅是辅助保护，不替代正确保管 Key。
-- Key 在插件设置页填写并保存至 `%LOCALAPPDATA%/AutoCommit/credentials`，使用 DPAPI 加密，按项目路径与服务地址隔离。换电脑、用户、项目路径或服务地址后需重新填写。旧的全局 Key 不自动复制到项目凭据。
+- Key 在插件设置页填写并保存至 `%LOCALAPPDATA%/AutoCommit/credentials`，使用 DPAPI 加密，同一服务地址默认使用本机共享 Key，也可为项目保存专用 Key 或选择不发送 Key。VS2019 和 VS2022 共用此存储，VS Code 使用独立的 SecretStorage。
 - 未识别仓库时保存的是全局默认设置，之后作为新仓库 model.json 的初始值。共享配置或规范修改后，点击“读取暂存变更”加载。
 - 创建文件会在 Git 中显示为未跟踪文件，由用户决定是否暂存和共享；插件不会自动暂存。
 
@@ -114,7 +114,7 @@ VS2019 新增 TFVC 工作区支持，使用 VS 安装的 Team Explorer 客户端
 
 1. 打开工具窗口，识别当前项目或手工指定目录，点击「读取变更」。Git 请先暂存本次提交内容。TFVC 请先打开 Team Explorer 的「挂起的更改」，将准备签入的文件移入「包含的更改」。插件读取选定目录及其子目录内的包含项。读取不会自动创建项目配置文件。
 2. 填写 Base URL（例如 `http://localhost:11434/v1`）及实际已部署模型名。本机 HTTP 也需勾选允许 HTTP。无认证服务可以留空 Key。测试连接会发送固定文本并可能产生少量费用。
-3. 如需保存配置，点击“保存项目配置”或“保存本机默认配置”。首次保存项目配置会提示将创建的 `.auto` 文件；API Key 仅保存在本机。无需保存也可以用当前设置生成。
+3. 如需保存配置，点击“保存项目配置”或“保存本机默认配置”。Key 通过“保存本机共享 Key”或“保存项目专用 Key”单独保存。“恢复使用共享 Key”可解除当前项目的覆盖。首次保存项目配置时会提示将创建的 `.auto` 文件。无需保存也可以用当前设置生成。
 4. 核对文件清单和预览，点击「生成提交说明」。AutoCommit 将所选变更和规范发送到配置的模型服务。`MaxInputCharacters` 默认每次请求 48,000 字符，超出后会分批处理，实际发送的差异可以多于本地预览。详细流程见[生成与合并流程图](docs/runtime.md#分批生成与合并)。
 5. 审核说明和文件范围。可以复制到 IDE 的原生提交框，也可以在 Visual Studio 插件内确认后执行本地 Git 提交或 TFVC 签入。
 
