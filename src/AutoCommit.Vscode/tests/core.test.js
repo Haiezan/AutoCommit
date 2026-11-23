@@ -208,7 +208,10 @@ for (const scenario of ['success', 'bad-id', 'final-error']) {
       assert.ok(final.includes('[F' + (i + 1) + '] ' + file));
     }
     assert.doesNotMatch(final, /F999/);
-    if (scenario === 'final-error') assert.match(result.text, /部分摘要[\s\S]*模块事实/);
+    if (scenario === 'final-error') {
+      assert.equal(result.partialSummary, true);
+      assert.match(result.text, /部分摘要[\s\S]*模块事实/);
+    }
     else assert.equal(result.fallbackReason, undefined);
     const logText = logs.join('\n');
     assert.match(logText, /请求 \d+ 次 超时 0 次/);

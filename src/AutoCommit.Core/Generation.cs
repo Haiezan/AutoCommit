@@ -34,6 +34,7 @@ public sealed class GenerationResult
     public long? ReasoningTokens { get; set; }
     public double Seconds { get; set; }
     public int Requests { get; set; }
+    public bool PartialSummary { get; set; }
     public string? FallbackReason { get; set; }
 }
 
@@ -132,7 +133,7 @@ public sealed class CommitGenerator
             if (facts.Count > 0) text = text.Split('\n')[0] + "\n\n本地摘要 · 部分摘要（已提取事实）\n" + string.Join("\n", facts);
             if (facts.Count > 0 && evidence.CompletedFiles < snapshot.Files.Count)
                 text += "\n\n覆盖尚未确认的文件\n" + string.Join("\n", snapshot.Files.Skip(evidence.CompletedFiles).Select(f => "- " + f.Operation + " " + f.Path));
-            return new GenerationResult { Text = text, FallbackReason = reason,
+            return new GenerationResult { Text = text, PartialSummary = facts.Count > 0, FallbackReason = reason,
                 Requests = totals.Requests, Seconds = timer.Elapsed.TotalSeconds };
         } finally {
             log?.Invoke($"模型阶段结束 请求 {totals.Requests} 次 超时 {timeouts} 次 耗时 {timer.ElapsedMilliseconds} ms");
@@ -146,7 +147,8 @@ public sealed class CommitGenerator
     {
         if (!snapshot.HasChanges) return "";
         var diff = RenderDiff(snapshot);
-        return IsPartial(snapshot) || (long)DirectPrompt(snapshot).Length + SerializeData(rules, diff).Length > budget
+        if (IsPartial(snapshot)) return "仅显示部分预览。\n" + BatchPreview + diff;
+        return (long)DirectPrompt(snapshot).Length + SerializeData(rules, diff).Length > budget
             ? BatchPreview + diff : diff;
     }
 

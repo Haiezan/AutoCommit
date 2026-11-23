@@ -58,7 +58,13 @@ internal sealed class CommitControl : UserControl
     private readonly TextBlock usageDetails = new TextBlock { TextWrapping = TextWrapping.Wrap };
     private readonly TextBlock validation = new TextBlock { TextWrapping = TextWrapping.Wrap };
     private readonly TextBlock configurationStatus = new TextBlock { TextWrapping = TextWrapping.Wrap };
-    private readonly Expander settingsSection = new Expander { Header = "模型设置", IsExpanded = true };
+    private readonly TabItem compose = new TabItem { Header = "提交说明" };
+    private readonly TabItem settingsSection = new TabItem { Header = "设置" };
+    private readonly TextBlock sendHint = new TextBlock { TextWrapping = TextWrapping.Wrap };
+    private readonly Button configure = new Button { Content = "配置模型" };
+    private readonly ComboBox credentialChoice = new ComboBox();
+    private readonly Button saveShared = new Button { Content = "保存本机共享 Key" };
+    private readonly TextBlock sharedHint = new TextBlock { Text = "更新共享 Key 会影响使用此服务地址共享凭据的项目。", TextWrapping = TextWrapping.Wrap };
     private readonly TextBlock attempt = new TextBlock { TextWrapping = TextWrapping.Wrap };
     private string projectRoot = "";
     private string loadedModelJson = "";
@@ -84,30 +90,40 @@ internal sealed class CommitControl : UserControl
         Content = shell;
         var footer = new StackPanel { Margin = new Thickness(0, 8, 0, 0) };
         DockPanel.SetDock(footer, Dock.Bottom); shell.Children.Add(footer);
-        var actions = new WrapPanel(); actions.Children.Add(generate); actions.Children.Add(copy); actions.Children.Add(commit); actions.Children.Add(cancel);
-        footer.Children.Add(modelStatus); footer.Children.Add(configurationStatus); footer.Children.Add(repositoryStatus); footer.Children.Add(actions); footer.Children.Add(progress); footer.Children.Add(status);
-        status.Margin = new Thickness(0, 6, 0, 0);
-        status.Text = "先选择变更范围，再配置模型并审核提交说明。";
-        var panel = new StackPanel();
-        shell.Children.Add(new ScrollViewer { Content = panel, VerticalScrollBarVisibility = ScrollBarVisibility.Auto });
-        panel.Children.Add(new TextBlock { Text = "AutoCommit", FontSize = 22, FontWeight = FontWeights.SemiBold });
-        panel.Children.Add(new TextBlock { Text = "开发者：Jason Jia", Margin = new Thickness(0, 2, 0, 0) });
-        panel.Children.Add(new TextBlock { Text = "读取变更 · 生成说明 · 审核后提交", Margin = new Thickness(0, 4, 0, 12) });
+        footer.Children.Add(progress);
+        footer.Children.Add(new ScrollViewer { Content = status, MaxHeight = 64, VerticalScrollBarVisibility = ScrollBarVisibility.Auto });
+        footer.Children.Add(cancel);
+        var tabs = new TabControl();
+        tabs.SetResourceReference(BackgroundProperty, VsBrushes.WindowKey);
+        tabs.SetResourceReference(ForegroundProperty, VsBrushes.WindowTextKey);
+        shell.Children.Add(tabs);
+        var details = new TabItem { Header = "查看变更" };
+        var diagnostics = new TabItem { Header = "运行详情" };
+        foreach (var tab in new[] { compose, details, settingsSection, diagnostics }) tabs.Items.Add(tab);
+        compose.IsSelected = true;
 
         var settingsPanel = new StackPanel { Margin = new Thickness(8) };
         Add(settingsPanel, "服务地址（Base URL）", endpoint);
         endpoint.ToolTip = "例如 http://localhost:11434/v1；不要包含 /chat/completions";
+        settingsPanel.Children.Add(allowHttp);
         Add(settingsPanel, "模型名称", model);
-        Add(settingsPanel, "API Key", key);
         settingsPanel.Children.Add(credentialStatus);
-        var saveShared = new Button { Content = "保存本机共享 Key" };
+        var authentication = new StackPanel();
+        settingsPanel.Children.Add(new Expander { Header = "更改认证方式", Content = authentication });
+        foreach (var label in new[] { "本机共享 Key", "项目专用 Key", "恢复使用共享 Key", "此项目不发送 Key" })
+            credentialChoice.Items.Add(new ComboBoxItem { Content = label });
+        Add(authentication, "认证方式", credentialChoice);
+        AutomationProperties.SetName(key, "API Key");
+        authentication.Children.Add(key);
+        authentication.Children.Add(sharedHint);
         foreach (var button in new[] { saveShared, saveProjectKey, useShared, anonymous }) credentialActions.Children.Add(button);
-        settingsPanel.Children.Add(credentialActions);
+        authentication.Children.Add(credentialActions);
+        credentialChoice.SelectionChanged += (s, e) => UpdateCredentialActions();
+        credentialChoice.SelectedIndex = 0;
         saveShared.Click += (s, e) => SaveCredential(KeyScope.Shared);
         saveProjectKey.Click += (s, e) => SaveCredential(KeyScope.Project);
         anonymous.Click += (s, e) => SaveCredential(KeyScope.Anonymous);
         useShared.Click += (s, e) => SaveCredential(null);
-        settingsPanel.Children.Add(allowHttp);
         var openLog = new Button { Content = "查看运行日志" };
         openLog.Click += (sender, args) => {
             try {
@@ -115,42 +131,79 @@ internal sealed class CommitControl : UserControl
                 System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo(RunLog.DirectoryPath) { UseShellExecute = true });
             } catch (Exception ex) { status.Text = "无法打开日志目录：" + ex.Message; }
         };
-        settingsPanel.Children.Add(openLog);
+        settingsPanel.Children.Add(configurationStatus);
+        settingsPanel.Children.Add(modelStatus);
         var configActions = new WrapPanel { Margin = new Thickness(0, 8, 0, 0) };
         configActions.Children.Add(test); configActions.Children.Add(save); settingsPanel.Children.Add(configActions);
         settingsPanel.Children.Add(new TextBlock { Text = "测试连接仅发送固定测试文本，可能产生少量调用费用。", TextWrapping = TextWrapping.Wrap });
-        settingsSection.Content = settingsPanel; panel.Children.Add(settingsSection);
+        settingsSection.Content = Scroll(settingsPanel);
         settingsPanel.Children.Add(validation); settingsPanel.Children.Add(testUsage);
         settingsPanel.Children.Add(new TextBlock { Text = "项目配置：.auto/model.json；规范：.auto/commit-rules.md。Key 仅在本机保存。Key 按服务地址选择。", TextWrapping = TextWrapping.Wrap });
 
-        var repositoryPanel = new StackPanel { Margin = new Thickness(8) };
-        var repositoryTools = new WrapPanel(); repositoryTools.Children.Add(refresh); repositoryTools.Children.Add(detect); repositoryPanel.Children.Add(repositoryTools);
+        var editorPanel = new Grid { Margin = new Thickness(6) };
+        editorPanel.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
+        editorPanel.RowDefinitions.Add(new RowDefinition { Height = new GridLength(1, GridUnitType.Star) });
+        editorPanel.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
+        compose.Content = editorPanel;
+        var scope = new StackPanel();
+        editorPanel.Children.Add(scope);
+        scope.Children.Add(summary);
+        var scopeActions = new StackPanel();
+        refresh.HorizontalAlignment = HorizontalAlignment.Left;
+        scopeActions.Children.Add(refresh);
+        var switchPanel = new StackPanel();
+        switchPanel.Children.Add(detect);
+        switchPanel.Children.Add(manual);
         directory.IsReadOnly = true;
-        Add(repositoryPanel, "当前仓库 / TFVC 范围", directory);
-        var manualPanel = new StackPanel(); manualPanel.Children.Add(manual);
-        repositoryPanel.Children.Add(new Expander { Header = "切换仓库 / 手工指定", Content = manualPanel });
-        manual.Checked += (s, e) => directory.IsReadOnly = false;
+        Add(switchPanel, "仓库或 TFVC 范围", directory);
+        var switchScope = new Expander { Header = "切换范围", Content = switchPanel };
+        scopeActions.Children.Add(switchScope);
+        scope.Children.Add(scopeActions);
+        manual.Checked += (s, e) => { directory.IsReadOnly = false; directory.Focus(); };
         manual.Unchecked += (s, e) => directory.IsReadOnly = true;
-        repositoryPanel.Children.Add(summary);
-        files.IsReadOnly = true; files.FontFamily = new System.Windows.Media.FontFamily("Consolas");
-        repositoryPanel.Children.Add(new Expander { Header = "变更文件清单", Content = files });
-        panel.Children.Add(new GroupBox { Header = "1 · 选择变更", Content = repositoryPanel, Margin = new Thickness(0, 10, 0, 8) });
+        var header = new WrapPanel();
+        header.Children.Add(draftState);
+        header.Children.Add(undo);
+        scope.Children.Add(header);
 
-        diff.IsReadOnly = true; diff.FontFamily = new System.Windows.Media.FontFamily("Consolas");
-        diff.TextWrapping = TextWrapping.NoWrap; diff.HorizontalScrollBarVisibility = ScrollBarVisibility.Auto;
-        diff.Height = 220; rules.Height = 220;
-        panel.Children.Add(new Expander { Header = "变更内容预览", Content = diff });
-        var rulePanel = new StackPanel(); rulePanel.Children.Add(ruleSource); rulePanel.Children.Add(rules);
-        panel.Children.Add(new Expander { Header = "提交规范", Content = rulePanel });
-        panel.Children.Add(new TextBlock { Text = "生成时向配置的模型服务发送所选变更和规范。超出单次预算时会分批汇总。", TextWrapping = TextWrapping.Wrap, Margin = new Thickness(0, 8, 0, 8) });
-        var output = new StackPanel { Margin = new Thickness(8) };
-        var outputHeader = new DockPanel(); outputHeader.Children.Add(draftState);
-        undo.HorizontalAlignment = HorizontalAlignment.Right; outputHeader.Children.Add(undo); output.Children.Add(outputHeader);
-        result.MinHeight = 180; result.Height = 220; output.Children.Add(result); output.Children.Add(count); output.Children.Add(usage); output.Children.Add(attempt);
-        output.Children.Add(new Expander { Header = "更多用量信息", Content = usageDetails });
-        output.Children.Add(new TextBlock { Text = "Git 提交到本地；TFVC 签入直接写入服务器。请核对范围。", TextWrapping = TextWrapping.Wrap, Margin = new Thickness(0, 6, 0, 0) });
-        panel.Children.Add(new GroupBox { Header = "提交说明", Content = output, Margin = new Thickness(0, 10, 0, 0) });
-        SizeChanged += (s, e) => result.Height = Math.Max(180, ActualHeight - 460);
+        result.Height = double.NaN;
+        Grid.SetRow(result, 1);
+        editorPanel.Children.Add(result);
+        var tools = new StackPanel();
+        Grid.SetRow(tools, 2);
+        editorPanel.Children.Add(tools);
+        tools.Children.Add(count);
+        tools.Children.Add(sendHint);
+        var actions = new WrapPanel();
+        foreach (var button in new[] { configure, generate, copy, commit }) actions.Children.Add(button);
+        tools.Children.Add(actions);
+        configure.Click += (s, e) => {
+            settingsSection.IsSelected = true;
+            settingsSection.UpdateLayout();
+            FocusMissingSetting();
+        };
+
+        var changes = new StackPanel { Margin = new Thickness(6) };
+        details.Content = Scroll(changes);
+        changes.Children.Add(repositoryStatus);
+        files.IsReadOnly = diff.IsReadOnly = true;
+        files.FontFamily = diff.FontFamily = new System.Windows.Media.FontFamily("Consolas");
+        Add(changes, "变更文件清单", files);
+        diff.TextWrapping = TextWrapping.NoWrap;
+        diff.HorizontalScrollBarVisibility = ScrollBarVisibility.Auto;
+        changes.Children.Add(new Expander { Header = "差异预览", Content = diff });
+        var rulePanel = new StackPanel();
+        rulePanel.Children.Add(ruleSource);
+        rulePanel.Children.Add(rules);
+        changes.Children.Add(new Expander { Header = "提交规范", Content = rulePanel });
+        var runtime = new StackPanel { Margin = new Thickness(6) };
+        foreach (var item in new UIElement[] { attempt, usage, usageDetails, openLog }) runtime.Children.Add(item);
+        diagnostics.Content = Scroll(runtime);
+        PreviewKeyDown += (s, e) => {
+            if (e.Key == System.Windows.Input.Key.Escape && cancel.IsEnabled && cancellation != null) {
+                cancellation.Cancel(); e.Handled = true;
+            }
+        };
         foreach (var editor in new Control[] { directory, endpoint, model, key, rules, diff, files, result }) {
             editor.SetResourceReference(BackgroundProperty, VsBrushes.WindowKey);
             editor.SetResourceReference(ForegroundProperty, VsBrushes.WindowTextKey);
@@ -160,7 +213,7 @@ internal sealed class CommitControl : UserControl
         AutomationProperties.SetName(diff, "变更内容预览，只读");
         AutomationProperties.SetName(files, "变更文件清单，只读");
         AutomationProperties.SetName(rules, "Markdown 提交规范");
-        foreach (var button in new[] { refresh, generate, copy, commit, detect, test, save, cancel, undo }) {
+        foreach (var button in new[] { refresh, generate, configure, copy, commit, detect, test, save, cancel, undo }) {
             button.Padding = new Thickness(12, 6, 12, 6); button.Margin = new Thickness(0, 3, 8, 3);
         }
         result.TextChanged += (s, e) => { if (!updatingResult) draft.Edit(result.Text); UpdateActions(); };
@@ -168,9 +221,10 @@ internal sealed class CommitControl : UserControl
         rules.TextChanged += (s, e) => {
             if (rules.Text != loadedRuleText) status.Text = "规范已修改，仅影响后续生成；当前提交说明未改变。";
             if (snapshot != null) UpdateDiffPreview();
+            UpdateActions();
         };
-        endpoint.TextChanged += (s, e) => { if (!loadingSettings) LoadCredential(); ValidateSettings(); InvalidateModelState(); };
-        model.TextChanged += (s, e) => { ValidateSettings(); InvalidateModelState(); };
+        endpoint.TextChanged += (s, e) => { if (!loadingSettings) LoadCredential(); InvalidateModelState(); };
+        model.TextChanged += (s, e) => InvalidateModelState();
         key.PasswordChanged += (s, e) => {
             if (loadingKey) return;
             editingKey = true;
@@ -192,12 +246,12 @@ internal sealed class CommitControl : UserControl
             modelStatus.Text = "连接成功：当前地址、认证及模型可正常调用。可保存配置。";
         }, modelStatus, operationTimeout: false);
         save.Click += async (s, e) => await RunAsync("保存配置", (token, run) => {
-            if (!ValidateSettings()) throw new InvalidOperationException(validation.Text);
+            if (!ValidateSettings(forRequest: false)) throw new InvalidOperationException(validation.Text);
             if (!string.IsNullOrEmpty(projectRoot) && !Directory.Exists(ProjectConfiguration.Folder(projectRoot)) &&
                 !Confirm("创建项目配置？", "将在 " + ProjectConfiguration.Folder(projectRoot) + " 创建 model.json、commit-rules.md、.gitignore 和 README.md。API Key 仅保存在本机。", "保存项目配置")) {
                 status.Text = "已取消保存项目配置，未写入文件。"; return Task.CompletedTask;
             }
-            SaveConfiguration(CurrentSettings()); settingsSection.IsExpanded = false;
+            SaveConfiguration(CurrentSettings()); compose.IsSelected = true;
             settingsSaved = true; UpdateConfigurationStatus();
             status.Text = string.IsNullOrEmpty(projectRoot) ? "尚未识别仓库，已保存为全局默认配置。" : "模型设置已保存到 .auto/model.json。";
             return Task.CompletedTask;
@@ -250,11 +304,11 @@ internal sealed class CommitControl : UserControl
             run.Write($"生成后读取快照 {snapshotTimer.ElapsedMilliseconds} ms");
             EnsureSame(selected, current);
             if (response.FallbackReason != null && !string.IsNullOrWhiteSpace(result.Text) &&
-                !Confirm("使用本地摘要？", response.FallbackReason + " 选择使用会替换现有说明。", "使用本地摘要")) {
+                !Confirm("使用" + SummaryKind(response) + "？", response.FallbackReason + " 选择使用会替换现有说明。", "使用该摘要", "保留原稿")) {
                 status.Text = "原说明已保留。"; return;
             }
-            draft.Accept(response, selected); ApplyDraft();
-            status.Text = response.FallbackReason == null ? "已生成，请核对提交规范及事实准确性。" : "已生成本地摘要。" + response.FallbackReason;
+            draft.Accept(response, selected); ApplyDraft(); result.Focus();
+            status.Text = response.FallbackReason == null ? "已生成，请核对提交规范及事实准确性。" : "已生成" + SummaryKind(response) + "。" + response.FallbackReason;
             run.Write("草稿已回填");
         }, operationTimeout: false);
         copy.Click += async (s, e) => await RunAsync("复制说明", async (token, run) => {
@@ -287,10 +341,10 @@ internal sealed class CommitControl : UserControl
             EnsureSame(selected, await git.ReadAsync(directory.Text, token, includeTfvcDiff: false));
             var message = result.Text;
             if (!ConfirmCommit(selected, message)) { status.Text = "已取消提交。"; return; }
-            cancel.IsEnabled = false; draftState.Text = "正在提交…"; status.Text = git.IsTfvc ? "正在签入 TFS 服务器…" : "正在提交到本地 Git，请等待 hooks 和签名完成…";
+            cancel.IsEnabled = false; cancel.Visibility = Visibility.Collapsed; draftState.Text = "正在提交…"; status.Text = git.IsTfvc ? "正在签入 TFS 服务器…" : "正在提交到本地 Git，请等待 hooks 和签名完成…";
             // Do not cancel a write operation midway: a killed Git may already have committed.
             var outputText = await git.CommitAsync(selected, message, CancellationToken.None);
-            draft.MarkCommitted(); snapshot = null; diff.Clear(); summary.Text = "提交完成，请读取下一次变更。";
+            draft.MarkCommitted(); snapshot = null; diff.Clear(); files.Clear(); summary.Text = "提交完成，请读取下一次变更。";
             repositoryStatus.Text = status.Text = (git.IsTfvc ? "服务器签入结果：\n" : "本地提交成功（未推送）：\n") + outputText.Trim();
         });
         Loaded += async (s, e) => {
@@ -307,17 +361,21 @@ internal sealed class CommitControl : UserControl
             var legacyUnbound = SettingsStore.MigrateLegacyKey();
             LoadCredential();
             if (legacyUnbound) status.Text = "旧本机 Key 缺少原服务地址，已备份。请为当前地址重新保存共享 Key。";
-            settingsSection.IsExpanded = legacyUnbound || keyUnavailable || string.IsNullOrWhiteSpace(settings.Model);
+            if (legacyUnbound || keyUnavailable) settingsSection.IsSelected = true;
             settingsSaved = SettingsStore.HasGlobalSettings; UpdateConfigurationStatus();
         }
         catch { status.Text = "无法加载本地设置，请重新填写。"; }
         finally { loadingSettings = false; }
+        cancel.Visibility = Visibility.Collapsed;
+        UpdateActions();
         Unloaded += (s, e) => cancellation?.Cancel();
     }
 
     private async Task ReadChangesAsync(CancellationToken token, RunLog readLog)
     {
         snapshot = null; diff.Clear(); files.Clear();
+        summary.Text = "当前范围尚未读取成功。";
+        summary.ToolTip = directory.Text;
         readLog.Write("开始读取变更");
         var current = await git.ReadAsync(directory.Text, token);
         readLog.Write($"读取完成 {current.Files.Count} 项");
@@ -337,7 +395,7 @@ internal sealed class CommitControl : UserControl
             settingsSaved = modelJson.Length != 0;
             modelStatus.Text = "模型：当前设置尚未测试";
             UpdateConfigurationStatus();
-            settingsSection.IsExpanded = keyUnavailable || string.IsNullOrWhiteSpace(projectSettings.Model);
+            if (keyUnavailable) settingsSection.IsSelected = true;
         }
         var path = ProjectConfiguration.RulesPath(current.Root);
         if (File.Exists(path) && new FileInfo(path).Length > 65536) throw new InvalidOperationException("规范文件超过 64KB。");
@@ -353,11 +411,12 @@ internal sealed class CommitControl : UserControl
         files.Text = FormatFiles(current);
         commit.Content = git.IsTfvc ? "签入 TFS 服务器" : "提交到本地 Git";
         repositoryStatus.Text = (git.IsTfvc ? "TFVC：" : "Git：") + "读取成功 · " + current.Root;
-        summary.Text = (git.IsTfvc ? "工作区：" + current.Branch.Substring("TFVC / ".Length) : "分支：" + current.Branch) + " · " + current.Files.Count +
-            (git.IsTfvc ? " 项包含的更改" : " 个暂存文件") + "\n" + current.Statistics;
+        summary.Text = (git.IsTfvc ? current.Root : new DirectoryInfo(current.Root).Name) + " · " + (git.IsTfvc ? "工作区：" + current.Branch.Substring("TFVC / ".Length) : "分支：" + current.Branch) + " · " + current.Files.Count +
+            (git.IsTfvc ? " 项包含的更改" : " 个暂存文件");
+        summary.ToolTip = current.Root + "\n" + current.Statistics;
         status.Text = !current.HasChanges
             ? git.IsTfvc ? "当前目录内没有包含项，请在 Team Explorer 的“包含的更改”中确认本次签入的文件。" : "暂存区没有变更，请先暂存修改。"
-            : !string.IsNullOrWhiteSpace(draft.Text) && !draft.Matches(current) ? "变更已读取，已有说明已保留并标记过期。请重新生成。" : "变更已读取，可以生成提交说明。";
+            : !string.IsNullOrWhiteSpace(draft.Text) && !draft.Matches(current) ? "变更已读取，已有说明已保留并标记过期。请重新生成。" : "";
         UpdateDiffPreview();
     }
 
@@ -377,7 +436,7 @@ internal sealed class CommitControl : UserControl
         var response = draft.Response;
         if (response == null) { usage.Text = "Token：无模型响应记录"; usageDetails.Text = ""; }
         else if (response.FallbackReason != null) {
-            usage.Text = $"本地摘要 · 模型请求 {response.Requests} 次";
+            usage.Text = $"{SummaryKind(response)} · 模型请求 {response.Requests} 次";
             usageDetails.Text = response.FallbackReason;
         }
         else {
@@ -388,15 +447,18 @@ internal sealed class CommitControl : UserControl
         UpdateActions();
     }
 
-    private bool ValidateSettings()
+    private bool ValidateSettings(bool forRequest = true)
     {
         var valid = Uri.TryCreate(endpoint.Text, UriKind.Absolute, out var address) && (address.Scheme == "http" || address.Scheme == "https");
         validation.Text = !valid ? "请输入有效的 HTTP(S) 服务地址。" : string.IsNullOrWhiteSpace(model.Text) ? "请填写模型名称。" : "";
+        if (forRequest && valid && validation.Text.Length == 0 && address.Scheme == "http" && allowHttp.IsChecked != true) validation.Text = "请在设置中明确允许 HTTP 或使用 HTTPS 地址。";
+        allowHttp.Visibility = Visible(valid && address.Scheme == "http");
         return string.IsNullOrEmpty(validation.Text);
     }
 
     private void InvalidateModelState()
     {
+        UpdateActions();
         if (loadingSettings) return;
         modelStatus.Text = "模型：当前设置尚未测试";
         settingsSaved = false;
@@ -432,14 +494,31 @@ internal sealed class CommitControl : UserControl
         var hasText = !string.IsNullOrWhiteSpace(result.Text);
         count.Text = "标题 " + result.Text.Split('\n')[0].TrimEnd('\r').Length + " / 72 字符（默认建议） · 共 " + result.Text.Length + " 字符";
         generate.Content = hasText ? "重新生成" : "生成提交说明";
-        generate.IsEnabled = !busy && snapshot?.HasChanges == true;
+        var configured = ValidateSettings();
+        var ready = snapshot?.HasChanges == true;
+        configure.Visibility = Visible(!configured);
+        configure.IsEnabled = !busy;
+        refresh.Content = snapshot == null ? draft.Committed ? "读取下一组变更" : "读取变更" : "刷新";
+        copy.Visibility = Visible(hasText);
+        undo.Visibility = Visible(draft.CanUndo);
+        generate.Visibility = Visible(ready && configured);
+        generate.IsEnabled = !busy && ready && configured;
+        sendHint.Text = !configured ? validation.Text : ready
+            ? "将向 " + new Uri(endpoint.Text.Trim()).Authority + " 发送所选变更和" + (rules.Text != loadedRuleText ? "临时规范。" : "提交规范。") : "";
+        count.Visibility = Visible(hasText);
+        var canSubmit = hasText && draft.Matches(snapshot);
+        commit.Visibility = Visible(canSubmit);
+        commit.FontWeight = FontWeights.SemiBold;
+        generate.FontWeight = canSubmit ? FontWeights.Normal : FontWeights.SemiBold;
         copy.IsEnabled = !busy && hasText;
-        commit.IsEnabled = !busy && hasText && draft.Matches(snapshot);
+        commit.IsEnabled = !busy && canSubmit;
         undo.IsEnabled = !busy && draft.CanUndo;
-        draftState.Text = !hasText ? "待生成" : draft.Committed ? "已提交" : !draft.Matches(snapshot) ? "已过期 · 内容已保留" : draft.Edited ? "已手动编辑" : "待审核";
+        draftState.Text = !hasText ? "待生成" : draft.Committed ? "已提交" : draft.Snapshot == null ? "手写草稿" :
+            !draft.Matches(snapshot) ? "变更待重新核对 · 已保留草稿" : draft.Edited ? "已手动编辑" : "待审核";
+        if (hasText && draft.Response?.FallbackReason != null) draftState.Text += " · " + SummaryKind(draft.Response);
     }
 
-    private bool Confirm(string title, string message, string accept)
+    private bool Confirm(string title, string message, string accept, string decline = "取消")
     {
         var dialog = new Window { Title = title, Width = 420, SizeToContent = SizeToContent.Height, ResizeMode = ResizeMode.NoResize,
             WindowStartupLocation = WindowStartupLocation.CenterOwner, ShowInTaskbar = false };
@@ -448,7 +527,7 @@ internal sealed class CommitControl : UserControl
         var panel = new StackPanel { Margin = new Thickness(20) }; dialog.Content = panel;
         panel.Children.Add(new TextBlock { Text = message, TextWrapping = TextWrapping.Wrap, Margin = new Thickness(0, 0, 0, 18) });
         var buttons = new StackPanel { Orientation = Orientation.Horizontal, HorizontalAlignment = HorizontalAlignment.Right };
-        var no = new Button { Content = "取消", IsCancel = true, IsDefault = true, Padding = new Thickness(14, 6, 14, 6), Margin = new Thickness(0, 0, 8, 0) };
+        var no = new Button { Content = decline, IsCancel = true, IsDefault = true, Padding = new Thickness(14, 6, 14, 6), Margin = new Thickness(0, 0, 8, 0) };
         var yes = new Button { Content = accept, Padding = new Thickness(14, 6, 14, 6) }; yes.Click += (s, e) => dialog.DialogResult = true;
         buttons.Children.Add(no); buttons.Children.Add(yes); panel.Children.Add(buttons); dialog.Loaded += (s, e) => no.Focus();
         return dialog.ShowDialog() == true;
@@ -518,7 +597,8 @@ internal sealed class CommitControl : UserControl
             editingKey = false;
             keyUnavailable = false;
             key.Clear();
-            saveProjectKey.IsEnabled = useShared.IsEnabled = anonymous.IsEnabled = projectRoot.Length != 0;
+            for (var i = 1; i < credentialChoice.Items.Count; i++)
+                ((ComboBoxItem)credentialChoice.Items[i]).IsEnabled = projectRoot.Length != 0;
             key.Password = SettingsStore.Credentials.Load(projectRoot, endpoint.Text, out scope);
             credentialStatus.Text = scope == KeyScope.Anonymous ? "此项目不发送 Key" :
                 scope == KeyScope.Project ? "正在使用项目专用 Key" :
@@ -528,7 +608,36 @@ internal sealed class CommitControl : UserControl
             credentialStatus.Text = (scope == KeyScope.Project ? "项目专用" : "本机共享") +
                 " Key 无法读取，请重新填写并保存，或选择其他凭据方式。";
             log?.Write("凭据读取失败 " + scope + " " + ex.GetType().Name);
-        } finally { loadingKey = false; }
+        } finally {
+            credentialChoice.SelectedIndex = scope == KeyScope.Project ? 1 : scope == KeyScope.Anonymous ? 3 : 0;
+            loadingKey = false;
+        }
+    }
+
+    private static Visibility Visible(bool visible) => visible ? Visibility.Visible : Visibility.Collapsed;
+
+    private static ScrollViewer Scroll(UIElement content) => new ScrollViewer {
+        Content = content, VerticalScrollBarVisibility = ScrollBarVisibility.Auto
+    };
+
+    private static string SummaryKind(GenerationResult response) => response.PartialSummary ? "部分摘要" : "本地摘要";
+
+    private void FocusMissingSetting()
+    {
+        if (!Uri.TryCreate(endpoint.Text, UriKind.Absolute, out var address) || (address.Scheme != "https" && address.Scheme != "http")) endpoint.Focus();
+        else if (string.IsNullOrWhiteSpace(model.Text)) model.Focus();
+        else allowHttp.Focus();
+    }
+
+    private void UpdateCredentialActions()
+    {
+        var choice = credentialChoice.SelectedIndex;
+        key.Visibility = Visible(choice == 0 || choice == 1);
+        sharedHint.Visibility = Visible(choice == 0);
+        saveShared.Visibility = Visible(choice == 0);
+        saveProjectKey.Visibility = Visible(choice == 1);
+        useShared.Visibility = Visible(choice == 2);
+        anonymous.Visibility = Visible(choice == 3);
     }
 
     private string RequestKey()
@@ -573,16 +682,21 @@ internal sealed class CommitControl : UserControl
     private void EnsureSame(ChangeSnapshot expected, ChangeSnapshot actual)
     {
         if (!string.Equals(expected.Root, actual.Root, StringComparison.OrdinalIgnoreCase) || expected.Fingerprint != actual.Fingerprint)
-        { snapshot = null; UpdateActions(); throw new InvalidOperationException("仓库或选定的变更已变化。说明已保留，请重新读取并生成。"); }
+        {
+            snapshot = null; files.Clear(); diff.Clear();
+            summary.Text = repositoryStatus.Text = "所选变更已变化，请重新读取。";
+            UpdateActions();
+            throw new InvalidOperationException("仓库或选定的变更已变化。说明已保留，请重新读取并生成。");
+        }
     }
     private async Task RunAsync(string operation, Func<CancellationToken, RunLog, Task> action, TextBlock? operationStatus = null, bool operationTimeout = true)
     {
         if (cancellation != null) return;
         cancellation = operationTimeout ? new CancellationTokenSource(TimeSpan.FromMinutes(3)) : new CancellationTokenSource();
         refresh.IsEnabled = generate.IsEnabled = copy.IsEnabled = commit.IsEnabled = detect.IsEnabled = manual.IsEnabled = test.IsEnabled = save.IsEnabled = false;
-        cancel.IsEnabled = true; progress.Visibility = Visibility.Visible; progress.IsIndeterminate = true;
-        credentialActions.IsEnabled = directory.IsEnabled = endpoint.IsEnabled = model.IsEnabled = key.IsEnabled = allowHttp.IsEnabled = rules.IsEnabled = false;
-        result.IsReadOnly = true; undo.IsEnabled = false;
+        cancel.Visibility = Visibility.Visible; cancel.IsEnabled = true; progress.Visibility = Visibility.Visible; progress.IsIndeterminate = true;
+        credentialChoice.IsEnabled = credentialActions.IsEnabled = directory.IsEnabled = endpoint.IsEnabled = model.IsEnabled = key.IsEnabled = allowHttp.IsEnabled = rules.IsEnabled = false;
+        result.IsReadOnly = true; UpdateActions();
         if (operationStatus != null) operationStatus.Text = "处理中…";
         status.Text = "处理中…";
         var run = new RunLog();
@@ -603,8 +717,8 @@ internal sealed class CommitControl : UserControl
             cancel.Content = "取消";
             if (testUsage.Text.Contains("正在等待")) testUsage.Text = "连接测试未获得用量；请求仍可能产生费用。";
             cancellation.Dispose(); cancellation = null;
-            credentialActions.IsEnabled = directory.IsEnabled = endpoint.IsEnabled = model.IsEnabled = key.IsEnabled = allowHttp.IsEnabled = rules.IsEnabled = true;
-            cancel.IsEnabled = false; progress.Visibility = Visibility.Collapsed; progress.IsIndeterminate = false;
+            credentialChoice.IsEnabled = credentialActions.IsEnabled = directory.IsEnabled = endpoint.IsEnabled = model.IsEnabled = key.IsEnabled = allowHttp.IsEnabled = rules.IsEnabled = true;
+            cancel.Visibility = Visibility.Collapsed; cancel.IsEnabled = false; progress.Visibility = Visibility.Collapsed; progress.IsIndeterminate = false;
             refresh.IsEnabled = detect.IsEnabled = manual.IsEnabled = test.IsEnabled = save.IsEnabled = true; result.IsReadOnly = false; UpdateActions();
         }
     }

@@ -51,13 +51,15 @@ async function requestKey(context, repo, settings) {
   return (await readCredential(context.secrets, ids)).value;
 }
 
-async function showError(error) {
+function showError(error, showLog) {
   if (error?.name === 'AbortError') {
     vscode.window.showInformationMessage('AutoCommit 已取消，原提交说明已保留。');
     return;
   }
   const message = error?.message || String(error);
-  vscode.window.showErrorMessage('AutoCommit：' + message);
+  vscode.window.showErrorMessage('AutoCommit：' + message, '查看日志').then(choice => {
+    if (choice === '查看日志') showLog();
+  });
 }
 
 async function setApiKey(context, _log, sourceControl) {
@@ -180,19 +182,21 @@ async function generate(context, log, sourceControl) {
       }
     }
   });
+  const summaryType = result.partialSummary ? '部分摘要' : '本地摘要';
   if (repo.inputBox.value !== previous || previous.trim()) {
     const replace = await vscode.window.showWarningMessage(
-      result.fallbackReason ? '提交框已有内容，是否使用本地摘要替换？' : '提交框已有内容，是否用新生成的说明替换？',
-      { modal: true, detail: '取消会保留当前提交框内容。' }, '替换内容'
+      result.fallbackReason ? `提交框已有内容，是否使用${summaryType}替换？` : '提交框已有内容，是否用新生成的说明替换？',
+      { modal: true, detail: '取消会保留当前提交框内容。' }, '替换现有说明'
     );
-    if (replace !== '替换内容') return;
+    if (replace !== '替换现有说明') return;
   }
   repo.inputBox.value = result.text;
   log(`已回填草稿 请求 ${result.requests} 次 总耗时 ${Date.now() - started} ms`);
   const usage = result.usage;
   const usageText = usage ? ` 输入 ${usage.prompt_tokens ?? '未提供'} / 输出 ${usage.completion_tokens ?? '未提供'} Token。` : ' 服务未返回 Token 用量。';
-  if (result.fallbackReason) vscode.window.showWarningMessage('已将本地摘要写入 Git 提交框。' + result.fallbackReason);
-  else vscode.window.showInformationMessage(`已写入 Git 提交框，请审核。模型请求 ${result.requests} 次。` + usageText);
+  log(`模型请求 ${result.requests} 次。` + usageText);
+  if (result.fallbackReason) vscode.window.showWarningMessage(`已将${summaryType}写入 Git 提交框。` + result.fallbackReason);
+  else vscode.window.setStatusBarMessage('AutoCommit：已填入提交说明，请审核。', 4000);
 }
 
 async function testGeneration(context, log, sourceControl) {
@@ -231,9 +235,8 @@ function activate(context) {
     const id = ++sequence;
     const log = message => output.info(`[${id}] ${message}`);
     const start = Date.now();
-    if (name !== 'autocommit.setApiKey') showLog();
     log(`AutoCommit ${version} ${name}`);
-    try { return await action(context, log, sourceControl); } catch (error) { log(error?.name === "AbortError" ? "已取消" : "操作失败"); await showError(error); }
+    try { return await action(context, log, sourceControl); } catch (error) { log(error?.name === "AbortError" ? "已取消" : "操作失败"); showError(error, showLog); }
     finally { log(`命令结束 ${Date.now() - start} ms`); }
   }));
   register('autocommit.generate', generate);

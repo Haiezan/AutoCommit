@@ -257,6 +257,7 @@ public class GenerationTests
         foreach (var name in names) Assert.Contains(name, final);
         Assert.True(result.Requests < names.Length);
         if (failFinal) {
+            Assert.True(result.PartialSummary);
             Assert.Contains("部分摘要", result.Text);
             Assert.Contains("模块事实", result.Text);
         } else Assert.Null(result.FallbackReason);

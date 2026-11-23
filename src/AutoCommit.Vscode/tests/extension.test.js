@@ -46,6 +46,7 @@ async function runGenerate(root, { answer, initialText = '', secrets = { get: as
   const requests = [];
   const authorization = [];
   const logs = [];
+  const statuses = [];
   const settings = { baseUrl: 'https://example.test/v1', model: 'test-model', allowHttp: false, maxInputCharacters: 48000 };
   const vscode = {
     ProgressLocation: { Notification: 1 },
@@ -54,13 +55,17 @@ async function runGenerate(root, { answer, initialText = '', secrets = { get: as
     commands: { registerCommand: (name, run) => commands.set(name, run) },
     window: {
       createOutputChannel: () => ({ info(message) { logs.push(message); }, show() { logs.push("已打开日志"); }, dispose() {} }),
+      setStatusBarMessage: message => statuses.push(message),
       showQuickPick: async choices => choices.find(choice => choice.action === pick),
       showInputBox: async () => input,
       showWarningMessage: async (message, options, action) => {
         warnings.push({ message, modal: options?.modal, action });
         return answer?.(action);
       },
-      showErrorMessage: message => errors.push(message),
+      showErrorMessage: async (message, action) => {
+        errors.push(message);
+        return answer?.(action);
+      },
       showInformationMessage: message => information.push(message),
       withProgress: (_options, run) => run({ report() {} }, {
         isCancellationRequested: false, onCancellationRequested: () => ({ dispose() {} })
@@ -79,7 +84,7 @@ async function runGenerate(root, { answer, initialText = '', secrets = { get: as
   }, { filename: extensionFile });
   module.exports.activate({ extension: { packageJSON: { version: "0.6.5" } }, extensionPath, subscriptions: [], secrets });
   await commands.get(command)(multiRoot ? { rootUri: repo.rootUri } : undefined);
-  return { warnings, errors, information, requests, authorization, logs, text: repo.inputBox.value };
+  return { warnings, errors, information, requests, authorization, logs, statuses, text: repo.inputBox.value };
 }
 
 test('多仓库示例测试只发送固定差异，日志可独立打开', async t => {
@@ -108,6 +113,10 @@ test('确认后暂存全部变更并生成说明，忽略文件和 HEAD 保持�
 
   assert.deepEqual(result.errors, []);
   assert.match(result.logs.join('\n'), /生成后校验/);
+  assert.ok(!result.logs.includes('已打开日志'));
+  assert.deepEqual(result.information, []);
+  assert.match(result.statuses[0], /已填入提交说明/);
+  assert.match(result.logs.join('\n'), /Token/);
   assert.doesNotMatch(result.logs.join('\n'), /added_marker|changed_marker|测试说明/);
   assert.deepEqual(result.warnings.map(warning => warning.action), [stageAction]);
   assert.ok(result.warnings[0].modal);
@@ -144,7 +153,7 @@ test('取消全部暂存时保留索引和原说明，有暂存内容时直接�
   assert.equal(git(root, 'diff', '--cached', '--name-only'), 'changed.txt');
 
   const replacement = await runGenerate(root, { initialText: '原说明' });
-  assert.deepEqual(replacement.warnings.map(warning => warning.action), ['替换内容']);
+  assert.deepEqual(replacement.warnings.map(warning => warning.action), ['替换现有说明']);
   assert.equal(replacement.text, '原说明');
 });
 
@@ -163,10 +172,11 @@ test('确认期间出现暂存项时保留用户的暂存范围', async t => {
   await fs.writeFile(path.join(root, 'changed.txt'), 'manual_stage\n');
   await fs.writeFile(path.join(root, 'unstaged.txt'), 'keep_unstaged\n');
   const result = await runGenerate(root, { answer: action => {
-    git(root, 'add', 'changed.txt');
+    if (action === stageAction) git(root, 'add', 'changed.txt');
     return action;
   } });
   assert.match(result.errors[0], /Git 状态发生变化/);
+  assert.ok(result.logs.includes('已打开日志'));
   assert.equal(result.requests.length, 0);
   assert.equal(git(root, 'diff', '--cached', '--name-only'), 'changed.txt');
 });

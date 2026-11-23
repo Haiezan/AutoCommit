@@ -306,7 +306,7 @@ async function generateMessage(snapshot, rules, settings, apiKey, fetcher = fetc
       const operation = snapshot.operations?.[evidence.completedFiles + index];
       return '- ' + (operation ? operation + ' ' : '') + file.replace(/[\r\n]/g, ' ');
     }).join('\n') : '';
-    return { text: text + remaining, fallbackReason: error.message, requests, usage: null };
+    return { text: text + remaining, fallbackReason: error.message, partialSummary: facts.length > 0, requests, usage: null };
   } finally {
     log?.(`模型阶段结束 请求 ${requests} 次 超时 ${timeouts} 次 耗时 ${Date.now() - generationStart} ms`);
     source?.destroy();

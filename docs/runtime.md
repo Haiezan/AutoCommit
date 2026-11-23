@@ -97,7 +97,7 @@ flowchart TD
 
 ## 运行日志
 
-VS Code 在「输出」面板的 AutoCommit 日志通道记录运行信息。Visual Studio 在「模型设置 → 查看运行日志」打开本机日志目录。日志按运行编号记录快照读取、复查、模型阶段、每次请求的输入字符数与耗时、超时次数和回退原因。日志省略凭据、差异正文和模型输出。Visual Studio 的 generation.log 达到 1 MiB 时轮换，保留上一份。
+VS Code 在「输出」面板的 AutoCommit 日志通道记录运行信息。Visual Studio 在「运行详情 → 查看运行日志」打开本机日志目录。日志按运行编号记录快照读取、复查、模型阶段、每次请求的输入字符数与耗时、超时次数和回退原因。日志省略凭据、差异正文和模型输出。Visual Studio 的 generation.log 达到 1 MiB 时轮换，保留上一份。
 
 ## 本地摘要与草稿保护
 
