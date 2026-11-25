@@ -29,6 +29,31 @@ test('读取 Git 暂存内容和文件清单，不创建项目配置；变更后
   } finally { await fs.rm(root, { recursive: true, force: true }); }
 });
 
+test('混合 GBK 和 UTF-8 的暂存差异进入模型请求和完整捕获', async () => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'autocommit-encodings-'));
+  try {
+    git(root, 'init');
+    const legacy = path.join(root, 'legacy.cpp');
+    await fs.writeFile(legacy, Buffer.from('2f2f20b2bdb3a40a', 'hex')); // "// 步长\n" in GBK
+    await fs.writeFile(path.join(root, 'modern.cpp'), '// 输出\n');
+    git(root, 'add', '.');
+    await fs.writeFile(legacy, 'UNSTAGED');
+    const capturePath = path.join(root, 'capture.diff');
+    const snapshot = await readGitSnapshot(root, { capturePath });
+    assert.equal(await fs.readFile(capturePath, 'utf8'), snapshot.diff);
+    const settings = { BaseUrl: 'https://example.test/v1', Model: 'local', MaxInputCharacters: 48000 };
+    const payloads = [];
+    await generateMessage(snapshot, 'rules', settings, '', async (_url, options) => {
+      payloads.push(JSON.parse(JSON.parse(options.body).messages[1].content).stagedDiff);
+      return { ok: true, json: async () => ({ choices: [{ message: { content: '修改步长与输出' } }] }) };
+    });
+    assert.equal(payloads.length, 1);
+    assert.match(payloads[0], /\+\/\/ 步长/);
+    assert.match(payloads[0], /\+\/\/ 输出/);
+    assert.doesNotMatch(payloads[0], /UNSTAGED/);
+  } finally { await fs.rm(root, { recursive: true, force: true }); }
+});
+
 test('项目配置优先于默认设置且读取不写文件', async () => {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), 'autocommit-vscode-'));
   try {

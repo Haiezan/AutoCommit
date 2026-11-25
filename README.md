@@ -4,7 +4,7 @@
 
 AutoCommit 根据所选变更和项目规范生成可审核的提交说明。Visual Studio 2019（16.x，x86）与 Visual Studio 2022 17.14（x64）使用共享 C# 代码，支持 Git 和 TFVC。VS Code 桌面扩展支持 Git，并共用项目中的 `.auto` 模型配置与提交规范。
 
-下载见 [GitHub Release v1.0.0](https://github.com/Haiezan/AutoCommit/releases/tag/v1.0.0) 和[本地安装包及校验值](releases/LATEST.md)。各平台使用各自的 VSIX。阅读[运行逻辑与流程图](docs/runtime.md)，或查看 [VS Code 使用说明](src/AutoCommit.Vscode/README.md)。
+下载见 [GitHub Release v1.0.3](https://github.com/Haiezan/AutoCommit/releases/tag/v1.0.3) 和[本地安装包及校验值](releases/LATEST.md)。各平台使用各自的 VSIX。阅读[运行逻辑与流程图](docs/runtime.md)，或查看 [VS Code 使用说明](src/AutoCommit.Vscode/README.md)。
 
 ## v1.0.0 正式版本
 
@@ -17,7 +17,7 @@ AutoCommit 将 Git 或 TFVC 变更、项目自己的提交规范和 OpenAI 兼�
 
 主要功能：
 
-- **按所选范围读取变更。** Git 以暂存区为准，支持部分暂存；VS Code 可在空暂存区时经用户确认暂存全部变更。Visual Studio 的 TFVC 读取所选映射目录与 Team Explorer「包含的更改」的交集。
+- **按所选范围读取变更。** Git 以暂存区为准，支持部分暂存；Visual Studio 和 VS Code 均可在空暂存区时经用户确认暂存全部变更。Visual Studio 的 TFVC 读取所选映射目录与 Team Explorer「包含的更改」的交集。
 - **按项目约定生成。** 使用 OpenAI 兼容的模型服务，可设置 Base URL、模型、请求超时、单次输入预算及可选思考参数。项目 `.auto/model.json` 和 `.auto/commit-rules.md` 优先于内置默认值；API Key 分别保存在 Windows DPAPI 或 VS Code SecretStorage 中。
 - **处理大型差异和超时。** 超过预算时分批提取逐文件事实，保留文件来源编号，按最终请求容量压缩相邻摘要，再结合项目规范生成。请求超时可重试或缩小批次；失败时提供标明覆盖范围的部分摘要或本地摘要。
 - **保护草稿与提交范围。** 生成前后校验变更快照，Visual Studio 提交或签入前再次核对；取消、快照变化或拒绝替换时保留原稿。Git hooks 与签名设置继续由 Git 处理。
@@ -112,7 +112,7 @@ VS2019 新增 TFVC 工作区支持，使用 VS 安装的 Team Explorer 客户端
 
 两个包均要求 .NET Framework 4.7.2 或更高版本。VS 2019 包使用 16.0 SDK 编译，安装清单限定 `[16.0,17.0)`；VS 2022 包使用 17.14 SDK。VSIX 构建工具统一使用 17.x，但不会作为扩展运行依赖打包。
 
-1. 打开工具窗口，在「提交说明」页核对当前仓库和变更数。点击「刷新」重新读取；需要其他目录时展开「切换范围」。Git 请先暂存本次提交内容。TFVC 请先打开 Team Explorer 的「挂起的更改」，将准备签入的文件移入「包含的更改」。插件读取选定目录及其子目录内的包含项。读取不会自动创建项目配置文件。
+1. 打开工具窗口，在「提交说明」页核对当前仓库和变更数。点击「刷新」重新读取；需要其他目录时展开「切换范围」。Git 可先暂存本次提交的文件，或在暂存区为空时点击「暂存全部并生成说明…」，确认暂存全部更改。TFVC 请先打开 Team Explorer 的「挂起的更改」，将准备签入的文件移入「包含的更改」。插件读取选定目录及其子目录内的包含项。读取不会自动创建项目配置文件。
 2. 点击「配置模型」或打开「设置」页，填写 Base URL（例如 `http://localhost:11434/v1`）及实际已部署模型名。本机 HTTP 也需勾选允许 HTTP。无认证服务可以留空 Key。测试连接会发送固定文本并可能产生少量费用。
 3. 在「更改认证方式」中选择共享、项目专用、恢复共享或不发送 Key，再执行对应操作。如需保存配置，点击“保存项目配置”或“保存本机默认配置”。Key 通过“保存本机共享 Key”或“保存项目专用 Key”单独保存。“恢复使用共享 Key”可解除当前项目的覆盖。首次保存项目配置时会提示将创建的 `.auto` 文件。无需保存也可以用当前设置生成。
 4. 在「查看变更」页核对文件清单，可展开差异或临时编辑提交规范。回到「提交说明」页，核对目标服务后点击「生成提交说明」。AutoCommit 将所选变更和规范发送到配置的模型服务。`MaxInputCharacters` 默认每次请求 48,000 字符，超出后会分批处理，实际发送的差异可以多于本地预览。详细流程见[生成与合并流程图](docs/runtime.md#分批生成与合并)。

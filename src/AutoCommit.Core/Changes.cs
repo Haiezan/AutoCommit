@@ -27,6 +27,8 @@ public sealed class ChangeSnapshot
     public IReadOnlyList<ChangeFile> Files { get; }
     public IReadOnlyList<TfvcFileChange>? TfvcChanges { get; }
     public bool DiffIsPartial { get; }
+    internal string StageableStatus { get; set; } = "";
+    public bool CanStageAll => !HasChanges && StageableStatus.Length > 0;
     public bool HasChanges => TfvcChanges == null ? !string.IsNullOrWhiteSpace(Diff) : TfvcChanges.Count > 0;
 
     public ChangeSnapshot(string root, string diff, string context = "", string branch = "", string statistics = "",
@@ -69,21 +71,25 @@ public sealed class GitChangeProvider : IChangeProvider
         var diffHash = await RunAsync(root, "diff --cached --no-ext-diff --no-textconv --no-color --src-prefix=a/ --dst-prefix=b/", token,
             readOutput: async output => {
                 using var hash = IncrementalHash.CreateHash(HashAlgorithmName.SHA256);
-                var buffer = new char[8192];
-                var bytes = new byte[buffer.Length * sizeof(char)];
+                var decoder = new GitPatchDecoder();
+                var bytes = new byte[16384];
                 int count;
-                while ((count = await output.ReadAsync(buffer, 0, buffer.Length).ConfigureAwait(false)) != 0) {
+                do {
+                    count = await output.BaseStream.ReadAsync(bytes, 0, bytes.Length).ConfigureAwait(false);
                     token.ThrowIfCancellationRequested();
-                    Buffer.BlockCopy(buffer, 0, bytes, 0, count * sizeof(char));
-                    hash.AppendData(bytes, 0, count * sizeof(char));
-                    var toKeep = Math.Min(count, MaxPreviewCharacters - preview.Length);
-                    preview.Append(buffer, 0, toKeep);
-                    partial |= toKeep < count;
-                    if (capture != null) await capture.WriteAsync(buffer, 0, count).ConfigureAwait(false);
-                }
+                    hash.AppendData(bytes, 0, count);
+                    var text = decoder.Read(bytes, count);
+                    var toKeep = Math.Min(text.Length, MaxPreviewCharacters - preview.Length);
+                    preview.Append(text, 0, toKeep);
+                    partial |= toKeep < text.Length;
+                    if (capture != null) await capture.WriteAsync(text).ConfigureAwait(false);
+                } while (count != 0);
                 return Convert.ToBase64String(hash.GetHashAndReset());
             });
         var names = await RunAsync(root, "diff --cached --name-status -z --no-ext-diff --no-textconv", token);
+        var stageableStatus = names.Length == 0
+            ? await RunAsync(root, "status --porcelain=v1 -z --untracked-files=all --ignore-submodules=dirty", token)
+            : "";
         var endContext = await RunAsync(root, "status --porcelain=v2 --branch --untracked-files=no", token);
         var endIndex = await RunAsync(root, "ls-files --stage -z", token);
         if (context != endContext || index != endIndex) throw new InvalidOperationException("读取期间 Git 状态发生变化，请重试。");
@@ -95,7 +101,19 @@ public sealed class GitChangeProvider : IChangeProvider
             var operation = status switch { 'A' => "新增", 'D' => "删除", 'M' => "修改", 'R' => "重命名", 'C' => "复制", 'T' => "类型变更", _ => "变更" };
             files.Add(new ChangeFile(entries[i++], operation));
         }
-        return new ChangeSnapshot(root, preview.ToString(), context + index + "\n" + diffHash, branch, statistics, files, diffIsPartial: partial);
+        return new ChangeSnapshot(root, preview.ToString(), context + index + "\n" + diffHash, branch, statistics, files, diffIsPartial: partial)
+            { StageableStatus = stageableStatus };
+    }
+
+    public async Task<ChangeSnapshot> StageAllAsync(ChangeSnapshot expected, CancellationToken token)
+    {
+        var current = await ReadAsync(expected.Root, token).ConfigureAwait(false);
+        if (!expected.CanStageAll || !current.CanStageAll || current.Fingerprint != expected.Fingerprint ||
+            current.StageableStatus != expected.StageableStatus ||
+            !string.Equals(current.Root, expected.Root, StringComparison.OrdinalIgnoreCase))
+            throw new InvalidOperationException("仓库或暂存范围已变化，请刷新后重试。");
+        await RunAsync(current.Root, "add --all", token).ConfigureAwait(false);
+        return await ReadAsync(current.Root, token).ConfigureAwait(false);
     }
 
     public async Task<string> CommitAsync(ChangeSnapshot expected, string message, CancellationToken token)

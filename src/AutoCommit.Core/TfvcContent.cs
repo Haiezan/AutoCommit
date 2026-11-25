@@ -58,7 +58,9 @@ public sealed class TfvcContent
         UnavailableReason = unavailableReason;
     }
 
-    public static TfvcContent ReadFile(string path, bool includeText)
+    public static TfvcContent ReadFile(string path, bool includeText) => ReadFile(path, includeText, null);
+
+    public static TfvcContent ReadFile(string path, bool includeText, int? codePage)
     {
         using var stream = File.OpenRead(path);
         using var sha = SHA256.Create();
@@ -70,27 +72,37 @@ public sealed class TfvcContent
         using var reader = new BinaryReader(stream);
         var bytes = reader.ReadBytes((int)length);
         var fingerprint = Convert.ToBase64String(sha.ComputeHash(bytes));
-        return Decode(bytes, fingerprint);
+        return Decode(bytes, fingerprint, codePage);
     }
 
-    private static TfvcContent Decode(byte[] bytes, string fingerprint)
+    private static TfvcContent Decode(byte[] bytes, string fingerprint, int? codePage)
     {
+        const string unavailable = "二进制或不支持的文本编码";
+        if (codePage == -1) // TFVC's explicit binary type.
+            return new TfvcContent(fingerprint, bytes.Length, unavailableReason: unavailable);
+
+        var offset = 0;
+        if (bytes.Length >= 4 && bytes[0] == 255 && bytes[1] == 254 && bytes[2] == 0 && bytes[3] == 0)
+            (codePage, offset) = (12000, 4);
+        else if (bytes.Length >= 4 && bytes[0] == 0 && bytes[1] == 0 && bytes[2] == 254 && bytes[3] == 255)
+            (codePage, offset) = (12001, 4);
+        else if (bytes.Length >= 2 && bytes[0] == 255 && bytes[1] == 254)
+            (codePage, offset) = (1200, 2);
+        else if (bytes.Length >= 2 && bytes[0] == 254 && bytes[1] == 255)
+            (codePage, offset) = (1201, 2);
+        else if (bytes.Length >= 3 && bytes[0] == 239 && bytes[1] == 187 && bytes[2] == 191)
+            (codePage, offset) = (65001, 3);
+
         try {
-            string text;
-            if (bytes.Length >= 2 && bytes[0] == 255 && bytes[1] == 254)
-                text = new UnicodeEncoding(false, true, true).GetString(bytes, 2, bytes.Length - 2);
-            else if (bytes.Length >= 2 && bytes[0] == 254 && bytes[1] == 255)
-                text = new UnicodeEncoding(true, true, true).GetString(bytes, 2, bytes.Length - 2);
-            else {
-                var offset = bytes.Length >= 3 && bytes[0] == 239 && bytes[1] == 187 && bytes[2] == 191 ? 3 : 0;
-                text = new UTF8Encoding(false, true).GetString(bytes, offset, bytes.Length - offset);
-            }
+            var encoding = Encoding.GetEncoding(codePage >= 0 ? codePage.Value : 65001,
+                EncoderFallback.ExceptionFallback, DecoderFallback.ExceptionFallback);
+            var text = encoding.GetString(bytes, offset, bytes.Length - offset);
             if (!text.Contains("\0"))
                 return new TfvcContent(fingerprint, bytes.Length, text.Replace("\r\n", "\n").Replace('\r', '\n'));
-        } catch (DecoderFallbackException) {
-            // Unsupported encodings and binary content are described by metadata.
+        } catch (Exception ex) when (ex is ArgumentException || ex is NotSupportedException) {
+            // Invalid bytes or a code page unavailable on this host.
         }
-        return new TfvcContent(fingerprint, bytes.Length, unavailableReason: "二进制或不支持的文本编码");
+        return new TfvcContent(fingerprint, bytes.Length, unavailableReason: unavailable);
     }
 
     public static TfvcFileChange CreateChange(string path, string operation, string? sourcePath,

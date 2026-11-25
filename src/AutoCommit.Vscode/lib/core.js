@@ -6,6 +6,7 @@ const { createHash } = require('node:crypto');
 const { createReadStream } = require('node:fs');
 const fs = require('node:fs/promises');
 const path = require('node:path');
+const { GitPatchDecoder } = require('./git-patch-decoder');
 const { StringDecoder } = require('node:string_decoder');
 const { ModelResponseError, ModelTimeoutError, summarizeBatches, timeoutSplitBudget } = require('./batch');
 
@@ -27,7 +28,7 @@ async function git(cwd, ...args) {
   }
 }
 
-async function readGitStream(cwd, args, previewCharacters, capturePath, signal) {
+async function readGitStream(cwd, args, previewCharacters, capturePath, signal, patch = false) {
   signal?.throwIfAborted();
   const capture = capturePath ? await fs.open(capturePath, 'wx', 0o600) : null;
   const child = spawn('git', args, {
@@ -44,7 +45,7 @@ async function readGitStream(cwd, args, previewCharacters, capturePath, signal) 
   child.stderr.on('data', text => { if (stderr.length < 4096) stderr += text; });
 
   const hash = createHash('sha256');
-  const decoder = new StringDecoder('utf8');
+  const decoder = patch ? new GitPatchDecoder() : new StringDecoder('utf8');
   let preview = '';
   let partial = false;
   function append(text) {
@@ -56,13 +57,20 @@ async function readGitStream(cwd, args, previewCharacters, capturePath, signal) 
     for await (const chunk of child.stdout) {
       signal?.throwIfAborted();
       hash.update(chunk);
-      if (previewCharacters > 0) append(decoder.write(chunk));
-      if (capture) await capture.writeFile(chunk);
+      if (previewCharacters > 0 || capture) {
+        const text = decoder.write(chunk);
+        append(text);
+        if (capture && text) await capture.writeFile(text);
+      }
     }
     const code = await completion;
     signal?.throwIfAborted();
     if (failure || code !== 0) throw failure || new Error(stderr.trim() || 'Git 操作失败');
-    if (previewCharacters > 0) append(decoder.end());
+    if (previewCharacters > 0 || capture) {
+      const tail = decoder.end();
+      append(tail);
+      if (capture && tail) await capture.writeFile(tail);
+    }
     return { preview, partial, digest: hash.digest('base64') };
   } finally {
     if (child.exitCode === null && child.signalCode === null) child.kill();
@@ -80,7 +88,7 @@ async function readGitSnapshot(directory, { capturePath, signal } = {}) {
   const index = (await readGitStream(root, ['ls-files', '--stage', '-z'], 0, null, signal)).digest;
   const statistics = await git(root, 'diff', '--cached', '--stat=120,80,20', '--no-ext-diff', '--no-textconv');
   const diff = await readGitStream(root, ['diff', '--cached', '--no-ext-diff', '--no-textconv', '--no-color', '--src-prefix=a/', '--dst-prefix=b/'],
-    PREVIEW_CHARACTERS, capturePath, signal);
+    PREVIEW_CHARACTERS, capturePath, signal, true);
   const names = (await readGitStream(root, ['diff', '--cached', '--name-status', '-z', '--no-ext-diff', '--no-textconv'],
     Infinity, null, signal)).preview;
   const endContext = await readGitStream(root, statusArgs, 0, null, signal);

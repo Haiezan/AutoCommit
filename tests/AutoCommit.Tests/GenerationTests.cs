@@ -5,6 +5,7 @@ using System.IO;
 using System.Linq;
 using System.Net;
 using System.Net.Http;
+using System.Text;
 using System.Text.RegularExpressions;
 using System.Threading;
 using System.Threading.Tasks;
@@ -63,6 +64,55 @@ public class GenerationTests
             new ModelSettings { BaseUrl = "https://example.test/v1", Model = "local" }, "", default);
         Assert.Equal("fix: 修复错误", result.Text); Assert.Equal("https://example.test/v1/chat/completions", handler.Url);
         Assert.Contains("RULE_MARKER", handler.Body); Assert.Contains("+changed", handler.Body);
+    }
+
+    [Theory]
+    [InlineData(true)]
+    [InlineData(false)]
+    public async Task MixedGbkAndUtf8ChangesReachModel(bool tfvc)
+    {
+        // The production VS host is .NET Framework. The .NET 8 test host opts into Windows code pages.
+        Encoding.RegisterProvider(CodePagesEncodingProvider.Instance);
+        var root = Directory.CreateTempSubdirectory("AutoCommit-encoding-").FullName;
+        try {
+            if (!tfvc) Git(root, "init");
+            var changes = new List<TfvcFileChange>();
+            foreach (var (name, codePage, marker) in new[] { ("legacy.cpp", 936, "步长"), ("modern.cpp", 65001, "输出") }) {
+                var path = Path.Combine(root, name);
+                var encoding = Encoding.GetEncoding(codePage);
+                File.WriteAllBytes(path, encoding.GetBytes("// 旧" + marker + "\n"));
+                var before = TfvcContent.ReadFile(path, true, codePage);
+                File.WriteAllBytes(path, encoding.GetBytes("// 新" + marker + "\n"));
+                if (tfvc) changes.Add(TfvcContent.CreateChange("$/" + name, "Edit", null, before,
+                    TfvcContent.ReadFile(path, true, codePage), 10000, default));
+            }
+
+            ChangeSnapshot snapshot;
+            if (tfvc) snapshot = new ChangeSnapshot(root, "", tfvcChanges: changes);
+            else {
+                Git(root, "add .");
+                await File.WriteAllTextAsync(Path.Combine(root, "legacy.cpp"), "UNSTAGED");
+                using var capture = new StringWriter();
+                snapshot = await new GitChangeProvider().ReadAsync(root, default, capture);
+                Assert.Equal(snapshot.Diff, capture.ToString());
+            }
+
+            var handler = new Handler();
+            using var client = new HttpClient(handler);
+            var settings = new ModelSettings { BaseUrl = "https://example.test/v1", Model = "local" };
+            await new CommitGenerator(client).GenerateAsync(snapshot, "rules", settings, "", default);
+            var diff = (string)ReadPayload(Assert.Single(handler.Bodies), settings.MaxInputCharacters)["stagedDiff"]!;
+            Assert.Contains("+// 新步长", diff);
+            Assert.Contains("+// 新输出", diff);
+            Assert.DoesNotContain("UNSTAGED", diff);
+            if (tfvc) {
+                Assert.Contains("-// 旧步长", diff);
+                Assert.Contains("-// 旧输出", diff);
+            }
+        } finally {
+            foreach (var path in Directory.EnumerateFiles(root, "*", SearchOption.AllDirectories)) File.SetAttributes(path, FileAttributes.Normal);
+            Directory.Delete(root, true);
+        }
     }
 
     [Fact]
@@ -276,6 +326,54 @@ public class GenerationTests
         Assert.True(system.Length + user.Length <= budget);
         return JObject.Parse(user);
     }
+    [Fact]
+    public async Task StageAllOffersOnlyEligibleChangesAndRechecksBeforeWritingIndex()
+    {
+        var root = Directory.CreateTempSubdirectory("AutoCommit-stage-").FullName;
+        try {
+            Git(root, "init");
+            Git(root, "config user.email test@example.invalid");
+            Git(root, "config user.name AutoCommitTest");
+            Git(root, "config commit.gpgsign false");
+            Git(root, "config core.hooksPath .git/disabled-test-hooks");
+            File.WriteAllText(Path.Combine(root, ".gitignore"), "ignored.txt\n");
+            var tracked = Path.Combine(root, "tracked.txt");
+            var deleted = Path.Combine(root, "deleted.txt");
+            File.WriteAllText(tracked, "original");
+            File.WriteAllText(deleted, "original");
+            Git(root, "add .");
+            Git(root, "commit -m initial");
+            var head = Git(root, "rev-parse HEAD");
+            File.WriteAllText(Path.Combine(root, "ignored.txt"), "ignored");
+            var provider = new GitChangeProvider();
+            Assert.False((await provider.ReadAsync(root, default)).CanStageAll);
+
+            File.WriteAllText(Path.Combine(root, "new.txt"), "new");
+            var untracked = await provider.ReadAsync(root, default);
+            Assert.True(untracked.CanStageAll);
+            Assert.Empty(untracked.Files);
+            File.WriteAllText(tracked, "modified");
+            File.Delete(deleted);
+            await Assert.ThrowsAsync<InvalidOperationException>(() => provider.StageAllAsync(untracked, default));
+            Assert.Empty(Git(root, "diff --cached --name-only"));
+
+            var emptyIndex = await provider.ReadAsync(root, default);
+            Git(root, "add tracked.txt");
+            Assert.False((await provider.ReadAsync(root, default)).CanStageAll);
+            await Assert.ThrowsAsync<InvalidOperationException>(() => provider.StageAllAsync(emptyIndex, default));
+            Assert.Equal("tracked.txt", Git(root, "diff --cached --name-only").Trim());
+
+            Git(root, "reset --quiet HEAD");
+            var staged = await provider.StageAllAsync(await provider.ReadAsync(root, default), default);
+            Assert.Equal(new[] { "deleted.txt", "new.txt", "tracked.txt" }, staged.Files.Select(f => f.Path));
+            Assert.False(staged.CanStageAll);
+            Assert.Equal(head, Git(root, "rev-parse HEAD"));
+        } finally {
+            foreach (var path in Directory.EnumerateFiles(root, "*", SearchOption.AllDirectories)) File.SetAttributes(path, FileAttributes.Normal);
+            Directory.Delete(root, true);
+        }
+    }
+
     [Fact]
     public async Task GitReadsIndexRatherThanUnstagedWorkingFile()
     {

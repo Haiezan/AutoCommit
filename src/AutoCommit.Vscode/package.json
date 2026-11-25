@@ -2,7 +2,7 @@
   "name": "autocommit",
   "displayName": "AutoCommit",
   "description": "根据 Git 暂存变更和项目规范生成提交说明。",
-  "version": "1.0.2",
+  "version": "1.0.3",
   "publisher": "jasonjia",
   "author": "Jason Jia",
   "repository": {

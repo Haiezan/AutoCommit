@@ -82,7 +82,7 @@ internal sealed class TfvcProvider
         workspace.VersionControlServer.TeamProjectCollection.Uri + "|" + workspace.Name + "|" + workspace.OwnerName;
 
     private static string ChangeIdentity(PendingChange change) =>
-        $"{change.ServerItem}|{change.SourceServerItem}|{change.LocalItem}|{change.PendingChangeId}|{change.Version}|{change.ChangeType}|{change.ItemType}";
+        $"{change.ServerItem}|{change.SourceServerItem}|{change.LocalItem}|{change.PendingChangeId}|{change.Version}|{change.ChangeType}|{change.ItemType}|{change.Encoding}";
 
     private static async Task EnsureSelectionUnchangedAsync(string root, Workspace workspace, PendingChange[] changes, CancellationToken token)
     {
@@ -115,14 +115,18 @@ internal sealed class TfvcProvider
             TfvcContent? before = null;
             TfvcContent? after = null;
             if (change.ItemType != ItemType.Folder) {
+                var baseEncoding = change.Encoding;
+                if (readText && !change.IsAdd && (change.IsEncoding || change.Encoding == -2)
+                    && change.ItemId > 0 && change.Version > 0)
+                    baseEncoding = workspace.VersionControlServer.GetItem(change.ItemId, change.Version).Encoding;
                 if (!change.IsAdd) {
                     var temp = Path.GetTempFileName();
-                    try { change.DownloadBaseFile(temp); before = TfvcContent.ReadFile(temp, readText); }
+                    try { change.DownloadBaseFile(temp); before = TfvcContent.ReadFile(temp, readText, baseEncoding); }
                     finally { File.Delete(temp); }
                 }
                 if (!change.IsDelete) {
                     if (!File.Exists(change.LocalItem)) throw new InvalidOperationException("挂起文件不存在：" + change.LocalItem);
-                    after = TfvcContent.ReadFile(change.LocalItem, readText);
+                    after = TfvcContent.ReadFile(change.LocalItem, readText, change.Encoding == -2 ? baseEncoding : change.Encoding);
                 }
                 identity.Append('|').Append(before?.Fingerprint).Append('|').Append(after?.Fingerprint);
             }

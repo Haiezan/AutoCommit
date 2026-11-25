@@ -272,6 +272,14 @@ internal sealed class CommitControl : UserControl
                 (draft.Edited ? "当前说明包含手动修改。" : "当前已有提交说明。") + "新结果生成成功后将替换当前内容；失败或取消会保留原内容。", "重新生成")) {
                 status.Text = "已取消重新生成，原内容已保留。"; return;
             }
+            if (selected.CanStageAll) {
+                if (!Confirm("暂存全部 Git 更改？", selected.Root + "\n将暂存此仓库内的修改、删除及未被忽略的新增文件，然后生成提交说明。", "暂存全部并生成")) {
+                    status.Text = "已取消暂存。"; return;
+                }
+                selected = await git.StageAllAsync(selected, token);
+                ShowSnapshot(selected);
+                if (!selected.HasChanges) { status.Text = "暂存后没有可用于生成说明的差异。"; return; }
+            }
             var needsBatching = CommitGenerator.NeedsBatching(selected, currentRules, settings.MaxInputCharacters);
             using var capture = needsBatching ? new FileStream(Path.Combine(Path.GetTempPath(), $"AutoCommit-{Guid.NewGuid():N}.diff"),
                 FileMode.CreateNew, FileAccess.ReadWrite, FileShare.None, 8192, FileOptions.DeleteOnClose) : null;
@@ -407,6 +415,11 @@ internal sealed class CommitControl : UserControl
         } else if (loadedRulePath != path || rules.Text == loadedRuleText) { loadedRuleText = incomingRules; rules.Text = incomingRules; }
         loadedRulePath = path;
         ruleSource.Text = rules.Text != incomingRules ? "规范来源：保留的临时修改（当前仓库规范未覆盖）" : File.Exists(path) ? "规范来源：" + path : "规范来源：内置完整规范（可在此临时编辑）";
+        ShowSnapshot(current);
+    }
+
+    private void ShowSnapshot(ChangeSnapshot current)
+    {
         snapshot = current;
         files.Text = FormatFiles(current);
         commit.Content = git.IsTfvc ? "签入 TFS 服务器" : "提交到本地 Git";
@@ -414,9 +427,12 @@ internal sealed class CommitControl : UserControl
         summary.Text = (git.IsTfvc ? current.Root : new DirectoryInfo(current.Root).Name) + " · " + (git.IsTfvc ? "工作区：" + current.Branch.Substring("TFVC / ".Length) : "分支：" + current.Branch) + " · " + current.Files.Count +
             (git.IsTfvc ? " 项包含的更改" : " 个暂存文件");
         summary.ToolTip = current.Root + "\n" + current.Statistics;
-        status.Text = !current.HasChanges
-            ? git.IsTfvc ? "当前目录内没有包含项，请在 Team Explorer 的“包含的更改”中确认本次签入的文件。" : "暂存区没有变更，请先暂存修改。"
-            : !string.IsNullOrWhiteSpace(draft.Text) && !draft.Matches(current) ? "变更已读取，已有说明已保留并标记过期。请重新生成。" : "";
+        if (current.HasChanges)
+            status.Text = !string.IsNullOrWhiteSpace(draft.Text) && !draft.Matches(current) ? "变更已读取，已有说明已保留并标记过期。请重新生成。" : "";
+        else if (git.IsTfvc)
+            status.Text = "当前目录内没有包含项，请在 Team Explorer 的“包含的更改”中确认本次签入的文件。";
+        else
+            status.Text = current.CanStageAll ? "暂存区为空。可暂存全部并生成说明，或先在 Git 更改窗口暂存所需文件。" : "当前 Git 仓库没有可暂存的更改。";
         UpdateDiffPreview();
     }
 
@@ -493,9 +509,9 @@ internal sealed class CommitControl : UserControl
         var busy = cancellation != null;
         var hasText = !string.IsNullOrWhiteSpace(result.Text);
         count.Text = "标题 " + result.Text.Split('\n')[0].TrimEnd('\r').Length + " / 72 字符（默认建议） · 共 " + result.Text.Length + " 字符";
-        generate.Content = hasText ? "重新生成" : "生成提交说明";
+        generate.Content = snapshot?.CanStageAll == true ? "暂存全部并生成说明…" : hasText ? "重新生成" : "生成提交说明";
         var configured = ValidateSettings();
-        var ready = snapshot?.HasChanges == true;
+        var ready = snapshot?.HasChanges == true || snapshot?.CanStageAll == true;
         configure.Visibility = Visible(!configured);
         configure.IsEnabled = !busy;
         refresh.Content = snapshot == null ? draft.Committed ? "读取下一组变更" : "读取变更" : "刷新";

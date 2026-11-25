@@ -53,6 +53,28 @@ public class TfvcContentTests
     }
 
     [Fact]
+    public void UsesEachRevisionsCodePageAndHonorsExplicitBinaryType()
+    {
+        Encoding.RegisterProvider(CodePagesEncodingProvider.Instance);
+        var path = Path.GetTempFileName();
+        try {
+            var gbk = Encoding.GetEncoding(936);
+            File.WriteAllBytes(path, gbk.GetBytes("旧步长"));
+            var before = TfvcContent.ReadFile(path, true, 936);
+            File.WriteAllBytes(path, Encoding.UTF8.GetBytes("新步长"));
+            var after = TfvcContent.ReadFile(path, true, 65001);
+            var change = TfvcContent.CreateChange("$/file", "Edit, Encoding", null, before, after, 1000, default);
+            var hunk = Assert.Single(change.Hunks);
+            Assert.Contains("-旧步长", hunk);
+            Assert.Contains("+新步长", hunk);
+
+            var binary = TfvcContent.ReadFile(path, true, -1);
+            Assert.Empty(TfvcContent.CreateChange("$/binary", "Add", null, null, binary, 1000, default).Hunks);
+            Assert.Equal(after.Fingerprint, binary.Fingerprint);
+        } finally { File.Delete(path); }
+    }
+
+    [Fact]
     public void BinaryAndLargeFileKeepMetadataAndFingerprint()
     {
         var path = Path.GetTempFileName();

@@ -23,6 +23,7 @@ internal sealed class RepositoryProvider
     [System.Runtime.CompilerServices.MethodImpl(System.Runtime.CompilerServices.MethodImplOptions.NoInlining)]
     private static Task<ChangeSnapshot> ReadTfvcAsync(string path, CancellationToken token, bool includeDiff, TextWriter? capture) =>
         new TfvcProvider().ReadAsync(path, token, includeDiff, capture);
+    public Task<ChangeSnapshot> StageAllAsync(ChangeSnapshot snapshot, CancellationToken token) => git.StageAllAsync(snapshot, token);
     public Task<string> CommitAsync(ChangeSnapshot snapshot, string message, CancellationToken token) =>
         snapshot.Branch.StartsWith("TFVC / ", System.StringComparison.Ordinal)
         ? new TfvcProvider().CommitAsync(snapshot, message, token) : git.CommitAsync(snapshot, message, token);
