@@ -27,17 +27,18 @@ internal sealed class TfvcProvider
     private const int MaxFileDiffCharacters = 100_000;
     private const int MaxSnapshotDiffCharacters = 2_000_000;
 
-    public async Task<ChangeSnapshot> ReadAsync(string directory, CancellationToken token, bool includeDiff, TextWriter? capture)
+    public async Task<ChangeSnapshot> ReadAsync(string directory, CancellationToken token, bool includeDiff, TextWriter? capture, bool detectTfvcScope)
     {
         var root = Path.GetFullPath(directory);
-        var selection = await GetSelectionAsync(root, token).ConfigureAwait(false);
+        var selection = await GetSelectionAsync(root, token, detectTfvcScope).ConfigureAwait(false);
+        root = selection.Root;
         var snapshot = await Task.Run(() => Read(root, selection.Workspace,
             GetCurrentChanges(selection.Workspace, selection.Changes), selection.IncludedCount, token, includeDiff, capture), token).ConfigureAwait(false);
         await EnsureSelectionUnchangedAsync(root, selection.Workspace, selection.Changes, token).ConfigureAwait(false);
         return snapshot;
     }
 
-    private static async Task<(Workspace Workspace, PendingChange[] Changes, int IncludedCount)> GetSelectionAsync(string root, CancellationToken token)
+    private static async Task<(Workspace Workspace, PendingChange[] Changes, int IncludedCount, string Root)> GetSelectionAsync(string root, CancellationToken token, bool detectScope = false)
     {
         await ThreadHelper.JoinableTaskFactory.SwitchToMainThreadAsync(token);
         Workspace workspace;
@@ -61,18 +62,37 @@ internal sealed class TfvcProvider
         return await Task.Run(() => {
             if (!workspace.IsLocalPathMapped(root))
                 throw new InvalidOperationException("此目录未映射到 Team Explorer 当前显示的 TFVC 工作区。请切换工作区或选择已映射的目录。");
-            var directory = root.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
-            var prefix = directory + Path.DirectorySeparatorChar;
-            var changes = included.Where(change => {
-                var localItem = change.LocalItem;
-                if (string.IsNullOrEmpty(localItem)) localItem = workspace.TryGetLocalItemForServerItem(change.ServerItem);
-                if (string.IsNullOrEmpty(localItem)) return false;
-                var fullPath = Path.GetFullPath(localItem).TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
-                return fullPath.Equals(directory, StringComparison.OrdinalIgnoreCase) ||
-                    fullPath.StartsWith(prefix, StringComparison.OrdinalIgnoreCase);
-            }).OrderBy(ChangeIdentity, StringComparer.Ordinal).ToArray();
-            return (workspace, changes, included.Length);
+            var localChanges = included.Select(change => {
+                token.ThrowIfCancellationRequested();
+                var path = change.LocalItem;
+                if (string.IsNullOrEmpty(path)) path = workspace.TryGetLocalItemForServerItem(change.ServerItem);
+                return (Change: change, Path: string.IsNullOrEmpty(path) ? null : Path.GetFullPath(path));
+            }).ToArray();
+
+            if (detectScope) {
+                foreach (var item in localChanges) {
+                    if (item.Path == null || IsWithinDirectory(item.Path, root)) continue;
+                    var ancestor = Directory.GetParent(root);
+                    while (ancestor != null && workspace.IsLocalPathMapped(ancestor.FullName)) {
+                        if (IsWithinDirectory(item.Path, ancestor.FullName)) {
+                            root = ancestor.FullName;
+                            break;
+                        }
+                        ancestor = ancestor.Parent;
+                    }
+                }
+            }
+            var changes = localChanges.Where(item => item.Path != null && IsWithinDirectory(item.Path, root))
+                .Select(item => item.Change).OrderBy(ChangeIdentity, StringComparer.Ordinal).ToArray();
+            return (workspace, changes, included.Length, root);
         }, token).ConfigureAwait(false);
+    }
+
+    private static bool IsWithinDirectory(string path, string directory)
+    {
+        var root = directory.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
+        return path.Equals(root, StringComparison.OrdinalIgnoreCase) ||
+            path.StartsWith(root + Path.DirectorySeparatorChar, StringComparison.OrdinalIgnoreCase);
     }
 
     private static object? GetAutomationProperty(object? target, string name) =>

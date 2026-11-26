@@ -385,7 +385,8 @@ internal sealed partial class CommitControl : UserControl
         summary.Text = "当前范围尚未读取成功。";
         summary.ToolTip = directory.Text;
         readLog.Write("开始读取变更");
-        var current = await git.ReadAsync(directory.Text, token);
+        var current = await git.ReadAsync(directory.Text, token, detectTfvcScope: manual.IsChecked != true);
+        if (git.IsTfvc) directory.Text = current.Root;
         readLog.Write($"读取完成 {current.Files.Count} 项");
         var modelPath = ProjectConfiguration.ModelPath(current.Root);
         var modelJson = File.Exists(modelPath) ? File.ReadAllText(modelPath) : "";
