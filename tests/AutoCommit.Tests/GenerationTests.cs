@@ -131,7 +131,7 @@ public class GenerationTests
         var generator = new CommitGenerator(client);
         var settings = new ModelSettings { BaseUrl = "https://example.test/v1", Model = "local", MaxInputCharacters = 500 };
         const string rules = "标题包含引号 \" 和反斜线 \\。";
-        using var capture = new StringReader("文件：$/large.cpp\n@@ -1,1 +1,1 @@\n+" + new string('"', 1100) +
+        using var capture = new StringReader("文件：$/large.cpp\n@@ -1,1 +1,1 @@\n+" + new string('"', 2400) +
             "🚀\n+NOT_IN_PREVIEW\n文件：$/binary；文件超过 1 MiB\n");
         Assert.Contains("分批", CommitGenerator.PreviewDiff(snapshot, rules, settings.MaxInputCharacters));
         var result = await generator.GenerateAsync(snapshot, rules, settings, "", default, capture);
@@ -141,7 +141,7 @@ public class GenerationTests
         Assert.Contains(leaves, diff => diff!.Contains("NOT_IN_PREVIEW"));
         Assert.Contains(leaves, diff => diff!.Contains("🚀"));
         Assert.Contains(leaves, diff => diff!.Contains("$/binary"));
-        Assert.Equal(1100, leaves.Sum(diff => diff!.Count(c => c == '"')));
+        Assert.Equal(2400, leaves.Sum(diff => diff!.Count(c => c == '"')));
         Assert.Contains(payloads.Take(payloads.Length - 1), payload => payload["changeSummaries"] != null);
         Assert.Equal(rules, (string?)payloads[^1]["commitRules"]);
         Assert.Equal("变更事实", result.Text);
@@ -149,6 +149,17 @@ public class GenerationTests
         Assert.Equal(handler.Calls, result.Requests);
         Assert.Equal(handler.Calls * 12, result.InputTokens);
         Assert.Null(result.TotalTokens);
+        var final = JObject.Parse(handler.Body)["messages"]!;
+        var direct = new ChangeSnapshot("repo", "+示例");
+        await generator.GenerateAsync(direct, rules, settings, "", default);
+        var directBody = handler.Body;
+        await generator.GenerateAsync(direct, rules, settings, "", default);
+        Assert.Equal(directBody, handler.Body);
+        var messages = JObject.Parse(directBody)["messages"]!;
+        Assert.True(JToken.DeepEquals(messages[0], final[0]));
+        var prefix = "{\"commitRules\":" + Newtonsoft.Json.JsonConvert.SerializeObject(rules) + ",";
+        Assert.StartsWith(prefix, (string)messages[1]!["content"]!);
+        Assert.StartsWith(prefix, (string)final[1]!["content"]!);
     }
 
     [Fact]

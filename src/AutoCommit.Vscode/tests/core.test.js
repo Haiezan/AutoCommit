@@ -89,6 +89,7 @@ test('小变更只请求一次，预算无法容纳规范时生成本地摘要',
   const result = await generateMessage(snapshot, '项目规范', settings, '', fetcher);
   assert.equal(result.text, 'fix: 修复错误');
   assert.equal(calls, 1);
+  assert.equal(result.usage.cached_tokens, null);
   const fallback = await generateMessage(snapshot, '项目规范', { ...settings, MaxInputCharacters: 1 }, '', fetcher);
   assert.match(fallback.fallbackReason, /输入预算/);
   assert.match(fallback.text, /本地摘要/);
@@ -104,11 +105,13 @@ test('完整暂存差异分批发送后逐层合并，所有请求都遵守预�
   const settings = { BaseUrl: 'https://example.test/v1', Model: 'model', MaxInputCharacters: 500 };
   const payloads = [];
   const progress = [];
+  const messagesSent = [];
   const fetcher = async (_url, options) => {
     const { messages } = JSON.parse(options.body);
     assert.ok(messages[0].content.length + messages[1].content.length <= settings.MaxInputCharacters);
+    messagesSent.push(messages);
     payloads.push(JSON.parse(messages[1].content));
-    return { ok: true, json: async () => ({ choices: [{ message: { content: '变更事实' } }], usage: { prompt_tokens: 12 } }) };
+    return { ok: true, json: async () => ({ choices: [{ message: { content: '变更事实' } }], usage: { prompt_tokens: 12, prompt_tokens_details: { cached_tokens: 3 } } }) };
   };
   try {
     await fs.writeFile(capturePath, source);
@@ -126,6 +129,17 @@ test('完整暂存差异分批发送后逐层合并，所有请求都遵守预�
     assert.equal(result.requests, payloads.length);
     assert.equal(result.usage.prompt_tokens, payloads.length * 12);
     assert.equal(result.usage.total_tokens, null);
+    assert.equal(result.usage.cached_tokens, result.requests * 3);
+    const final = messagesSent.at(-1);
+    const directSnapshot = { diff: '+示例' };
+    await generateMessage(directSnapshot, '项目规范', settings, '', fetcher);
+    const direct = messagesSent.at(-1);
+    await generateMessage(directSnapshot, '项目规范', settings, '', fetcher);
+    assert.deepEqual(messagesSent.at(-1), direct);
+    assert.deepEqual(direct[0], final[0]);
+    for (const messages of [final, direct]) {
+      assert.ok(messages[1].content.startsWith('{"commitRules":"项目规范",'));
+    }
   } finally {
     await fs.rm(capturePath, { force: true });
     await fs.rmdir(temporary);

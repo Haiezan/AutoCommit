@@ -193,7 +193,9 @@ async function generate(context, log, sourceControl) {
   repo.inputBox.value = result.text;
   log(`已回填草稿 请求 ${result.requests} 次 总耗时 ${Date.now() - started} ms`);
   const usage = result.usage;
-  const usageText = usage ? ` 输入 ${usage.prompt_tokens ?? '未提供'} / 输出 ${usage.completion_tokens ?? '未提供'} Token。` : ' 服务未返回 Token 用量。';
+  const cacheShare = usage?.prompt_tokens > 0 && usage.cached_tokens != null
+    ? `，占输入 ${(100 * usage.cached_tokens / usage.prompt_tokens).toFixed(1)}%` : '';
+  const usageText = usage ? ` 输入 ${usage.prompt_tokens ?? '未提供'}（缓存输入 ${usage.cached_tokens ?? '未提供'}${cacheShare}） / 输出 ${usage.completion_tokens ?? '未提供'} Token。` : ' 服务未返回 Token 用量。';
   log(`模型请求 ${result.requests} 次。` + usageText);
   if (result.fallbackReason) vscode.window.showWarningMessage(`已将${summaryType}写入 Git 提交框。` + result.fallbackReason);
   else vscode.window.setStatusBarMessage('AutoCommit：已填入提交说明，请审核。', 4000);
