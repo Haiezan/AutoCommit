@@ -10,7 +10,7 @@ public sealed class CommitDraft
     public bool Committed { get; private set; }
     private CommitDraft? previous;
     public bool CanUndo => previous != null;
-    public void Edit(string text) { if (Text != text) { Text = text; Edited = true; } }
+    public void Edit(string text) { if (Text != text) { Text = text; Edited = true; Committed = false; } }
     public bool Matches(ChangeSnapshot? current) => !Committed && current != null && Snapshot != null &&
         string.Equals(current.Root, Snapshot.Root, System.StringComparison.OrdinalIgnoreCase) && current.Fingerprint == Snapshot.Fingerprint;
     public void Accept(GenerationResult response, ChangeSnapshot snapshot)
@@ -26,5 +26,13 @@ public sealed class CommitDraft
         Text = previous.Text; Snapshot = previous.Snapshot; Response = previous.Response;
         Edited = previous.Edited; Committed = previous.Committed; previous = null;
     }
-    public void MarkCommitted() { Committed = true; previous = null; }
+    public void MarkCommitted()
+    {
+        Text = "";
+        Snapshot = null;
+        Response = null;
+        Edited = false;
+        previous = null;
+        Committed = true;
+    }
 }

@@ -353,6 +353,7 @@ internal sealed partial class CommitControl : UserControl
             // Do not cancel a write operation midway: a killed Git may already have committed.
             var outputText = await git.CommitAsync(selected, message, CancellationToken.None);
             draft.MarkCommitted(); InvalidateViews(); openRules.IsEnabled = false; snapshot = null; diff.Clear(); files.Clear(); summary.Text = "提交完成，请读取下一次变更。";
+            ApplyDraft();
             repositoryStatus.Text = status.Text = (git.IsTfvc ? "服务器签入结果：\n" : "本地提交成功（未推送）：\n") + outputText.Trim();
         });
         Loaded += async (s, e) => {

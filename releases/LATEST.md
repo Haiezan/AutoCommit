@@ -6,4 +6,4 @@
 | Visual Studio 2022 17.14 | [下载](./1.0.4/AutoCommit-VS2022-1.0.4.vsix) |
 | VS Code 桌面版 | [下载](./1.0.4/AutoCommit-VSCode-1.0.4.vsix) |
 
-校验值见 [SHA256SUMS.txt](./1.0.4/SHA256SUMS.txt)。Visual Studio 与 VS Code 的 VSIX 不能互相安装。安装包仅在本仓库本地发布，未完成 GUI 和 TFVC 服务器联调。
+校验值见 [SHA256SUMS.txt](./1.0.4/SHA256SUMS.txt)。Visual Studio 与 VS Code 的 VSIX 不能互相安装。对应的 [GitHub Release v1.0.4](https://github.com/Haiezan/AutoCommit/releases/tag/v1.0.4) 也提供这些安装包和校验文件。自动化测试通过；编辑器 GUI 与真实 TFVC 服务器联调尚未完成。

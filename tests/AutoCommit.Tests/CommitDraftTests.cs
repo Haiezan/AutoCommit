@@ -29,7 +29,16 @@ public class CommitDraftTests
         var draft = new CommitDraft(); var snapshot = new ChangeSnapshot("repo", "first");
         draft.Accept(new GenerationResult { Text = "first" }, snapshot);
         draft.Accept(new GenerationResult { Text = "second" }, snapshot);
-        draft.MarkCommitted(); draft.Edit("edited after commit");
+        draft.Edit("ready to commit");
+        draft.MarkCommitted();
+        Assert.True(draft.Committed);
+        Assert.Empty(draft.Text);
+        Assert.Null(draft.Snapshot);
+        Assert.Null(draft.Response);
+        Assert.False(draft.Edited);
+        Assert.False(draft.CanUndo);
+        draft.Edit("edited after commit");
+        Assert.False(draft.Committed);
         Assert.False(draft.Matches(snapshot)); Assert.False(draft.CanUndo);
         Assert.Equal("edited after commit", draft.Text);
     }

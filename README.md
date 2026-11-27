@@ -4,9 +4,9 @@
 
 AutoCommit 根据所选变更和项目规范生成可审核的提交说明。Visual Studio 2019（16.x，x86）与 Visual Studio 2022 17.14（x64）使用共享 C# 代码，支持 Git 和 TFVC。VS Code 桌面扩展支持 Git，并共用项目中的 `.auto` 模型配置与提交规范。
 
-下载见 [GitHub Release v1.0.3](https://github.com/Haiezan/AutoCommit/releases/tag/v1.0.3) 和[本地安装包及校验值](releases/LATEST.md)。各平台使用各自的 VSIX。阅读[运行逻辑与流程图](docs/runtime.md)，或查看 [VS Code 使用说明](src/AutoCommit.Vscode/README.md)。
+下载见 [GitHub Release v1.0.4](https://github.com/Haiezan/AutoCommit/releases/tag/v1.0.4) 和[本地安装包及校验值](releases/LATEST.md)。各平台使用各自的 VSIX。阅读[运行逻辑与流程图](docs/runtime.md)，或查看 [VS Code 使用说明](src/AutoCommit.Vscode/README.md)。
 
-## v1.0.0 正式版本
+## 当前功能
 
 AutoCommit 将 Git 或 TFVC 变更、项目自己的提交规范和 OpenAI 兼容模型连接起来，生成供开发者审核的提交说明。Visual Studio 集成 Git 与 TFVC 工作流；VS Code 扩展读取 Git 暂存区，并把结果填入原生提交框。
 
@@ -24,7 +24,9 @@ AutoCommit 将 Git 或 TFVC 变更、项目自己的提交规范和 OpenAI 兼�
 - **查看运行过程。** 显示阶段、进度、耗时和模型返回的 Token 用量；提供运行日志和固定文本连接测试。示例生成命令使用固定示例差异，不发送仓库内容。
 - **明确外发与写入行为。** 只有用户点击生成时才会发送所选变更及规范到配置的模型服务；HTTP 需显式允许。插件不会自动推送，也不会绕过 TFVC 团队策略。
 
-Release 构建通过，33 项 .NET 测试与 19 项 VS Code 测试通过，三个安装包版本及 SHA-256 校验值已核对。自动化测试不代替 Visual Studio / VS Code 实机 GUI 验收；真实模型服务和 TFVC 服务器也未在此次发布中联调。VS Code 包含工具报告未提供 LICENSE 文件，但打包成功。
+v1.0.4 的 Visual Studio Release 重建通过（0 警告、0 错误），37 项 .NET 测试与 22 项 VS Code 测试通过；三个安装包版本及 SHA-256 校验值已核对。自动化测试不代替 Visual Studio / VS Code 实机 GUI 验收；真实模型服务和 TFVC 服务器也未在此次发布中联调。VS Code 包含工具报告未提供 LICENSE 文件，但打包成功。
+
+v1.0.4 的详细变化见[发布说明](releases/1.0.4/RELEASE_NOTES.md)。
 
 ## 历史版本
 
